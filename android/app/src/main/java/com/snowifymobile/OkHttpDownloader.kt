@@ -1,4 +1,4 @@
-package com.snowifymobile
+﻿package com.snowifymobile
 
 import okhttp3.OkHttpClient
 import okhttp3.Request as OkHttpRequest
