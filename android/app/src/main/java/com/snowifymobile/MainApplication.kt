@@ -1,60 +1,27 @@
 package com.snowifymobile
 
-import okhttp3.OkHttpClient
-import okhttp3.Request as OkHttpRequest
-import org.schabi.newpipe.extractor.downloader.Downloader
-import org.schabi.newpipe.extractor.downloader.Request
-import org.schabi.newpipe.extractor.downloader.Response
-import java.io.IOException
+import android.app.Application
+import com.facebook.react.PackageList
+import com.facebook.react.ReactApplication
+import com.facebook.react.ReactHost
+import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
+import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 
-class OkHttpDownloader private constructor() : Downloader() {
+class MainApplication : Application(), ReactApplication {
 
-    private val client = OkHttpClient.Builder()
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
+  override val reactHost: ReactHost by lazy {
+    getDefaultReactHost(
+      context = applicationContext,
+      packageList =
+        PackageList(this).packages.apply {
+          // Packages that cannot be autolinked yet can be added manually here, for example:
+          // add(MyReactNativePackage())
+        },
+    )
+  }
 
-    companion object {
-        @Volatile
-        private var instance: OkHttpDownloader? = null
-
-        fun getInstance(): OkHttpDownloader {
-            return instance ?: synchronized(this) {
-                instance ?: OkHttpDownloader().also { instance = it }
-            }
-        }
-    }
-
-    @Throws(IOException::class)
-    override fun execute(request: Request): Response {
-        val httpMethod = request.httpMethod()
-        val url = request.url()
-        val headers = request.headers()
-        val dataToSend = request.dataToSend()
-
-        var builder = OkHttpRequest.Builder().url(url)
-
-        for ((key, values) in headers) {
-            for (value in values) {
-                builder = builder.addHeader(key, value)
-            }
-        }
-
-        builder = if (dataToSend != null) {
-            builder.method(httpMethod, okhttp3.RequestBody.create(null, dataToSend))
-        } else {
-            builder.method(httpMethod, null)
-        }
-
-        val response = client.newCall(builder.build()).execute()
-        val body = response.body?.string() ?: ""
-        val latestUrl = response.request.url.toString()
-
-        return Response(
-            response.code,
-            response.message,
-            response.headers.toMultimap(),
-            body,
-            latestUrl
-        )
-    }
+  override fun onCreate() {
+    super.onCreate()
+    loadReactNative(this)
+  }
 }
