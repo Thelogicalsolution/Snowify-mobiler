@@ -1,14 +1,12 @@
-PS F:\Projects\SnowifyMobile> npm install react-native-track-player
+/**
+ * @format
+ */
 
-added 1 package, and audited 885 packages in 8s
+import { AppRegistry } from 'react-native';
+import TrackPlayer from 'react-native-track-player';
+import App from './App';
+import { name as appName } from './app.json';
+import { PlaybackService } from './PlaybackService';
 
-184 packages are looking for funding
-  run `npm fund` for details
-
-4 high severity vulnerabilities
-
-To address all issues, run:
-  npm audit fix
-
-Run `npm audit` for details.
-PS F:\Projects\SnowifyMobile>
+AppRegistry.registerComponent(appName, () => App);
+TrackPlayer.registerPlaybackService(() => PlaybackService);
