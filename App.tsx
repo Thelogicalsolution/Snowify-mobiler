@@ -3,9 +3,11 @@
  * @format
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
+  Image,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -13,33 +15,116 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
+import TrackPlayer, {
+  Capability,
+  State,
+  usePlaybackState,
+} from 'react-native-track-player';
+import { searchVideos, getStreamUrl } from './NewPipeBridge';
 
-type Track = {
-  id: string;
-  title: string;
-  artist: string;
-  duration: string;
+type SearchResult = {
+  url: string;
+  name: string;
+  thumbnailUrl: string;
 };
 
-const MOCK_TRACKS: Track[] = [
-  { id: '1', title: 'Starlight Drive', artist: 'Neon Fields', duration: '3:42' },
-  { id: '2', title: 'Midnight Frequency', artist: 'Lumen', duration: '4:01' },
-  { id: '3', title: 'Glass Horizon', artist: 'Echo Valley', duration: '2:58' },
-  { id: '4', title: 'Paper Moon', artist: 'Waverunner', duration: '3:15' },
-  { id: '5', title: 'Static Bloom', artist: 'Kindred', duration: '3:33' },
-];
+let playerSetupDone = false;
+
+async function setupPlayer() {
+  if (playerSetupDone) return;
+  await TrackPlayer.setupPlayer();
+  await TrackPlayer.updateOptions({
+    capabilities: [
+      Capability.Play,
+      Capability.Pause,
+      Capability.SkipToNext,
+      Capability.SkipToPrevious,
+      Capability.Stop,
+    ],
+    compactCapabilities: [Capability.Play, Capability.Pause],
+  });
+  playerSetupDone = true;
+}
 
 function App() {
-  const isDarkMode = useColorScheme() === 'dark';
   const [query, setQuery] = useState('');
-  const [nowPlaying, setNowPlaying] = useState<Track | null>(null);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
+  const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
 
-  const filteredTracks = MOCK_TRACKS.filter(track =>
-    track.title.toLowerCase().includes(query.toLowerCase()) ||
-    track.artist.toLowerCase().includes(query.toLowerCase())
-  );
+  const playbackState = usePlaybackState();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setupPlayer();
+  }, []);
+
+  useEffect(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    if (!query.trim()) {
+      setResults([]);
+      setSearchError(null);
+      return;
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      setSearchError(null);
+      try {
+        const found = await searchVideos(query);
+        setResults(found);
+      } catch (e: any) {
+        setSearchError(e?.message ?? 'Search failed');
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 600);
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [query]);
+
+  async function handleSelectTrack(item: SearchResult) {
+    setLoadingTrack(item.url);
+    try {
+      const stream = await getStreamUrl(item.url);
+
+      await TrackPlayer.reset();
+      await TrackPlayer.add({
+        id: item.url,
+        url: stream.streamUrl,
+        title: stream.title || item.name,
+        artist: 'YouTube',
+        artwork: stream.thumbnailUrl || item.thumbnailUrl,
+      });
+      await TrackPlayer.play();
+      setNowPlaying(item);
+    } catch (e: any) {
+      setSearchError(e?.message ?? 'Could not play this track');
+    } finally {
+      setLoadingTrack(null);
+    }
+  }
+
+  async function togglePlayPause() {
+    if (playbackState.state === State.Playing) {
+      await TrackPlayer.pause();
+    } else {
+      await TrackPlayer.play();
+    }
+  }
+
+  const isPlaying = playbackState.state === State.Playing;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -52,48 +137,81 @@ function App() {
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search songs or artists..."
+          placeholder="Search YouTube..."
           placeholderTextColor="#8A8A9A"
           value={query}
           onChangeText={setQuery}
         />
       </View>
 
+      {searching && (
+        <ActivityIndicator
+          style={styles.loadingIndicator}
+          color="#00E5FF"
+        />
+      )}
+
+      {searchError && (
+        <Text style={styles.errorText}>{searchError}</Text>
+      )}
+
       <FlatList
-        data={filteredTracks}
-        keyExtractor={item => item.id}
+        data={results}
+        keyExtractor={item => item.url}
         contentContainerStyle={styles.listContent}
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.trackRow}
-            onPress={() => setNowPlaying(item)}
+            onPress={() => handleSelectTrack(item)}
+            disabled={loadingTrack === item.url}
           >
-            <View style={styles.trackArt} />
+            {item.thumbnailUrl ? (
+              <Image
+                source={{ uri: item.thumbnailUrl }}
+                style={styles.trackArt}
+              />
+            ) : (
+              <View style={styles.trackArt} />
+            )}
             <View style={styles.trackInfo}>
-              <Text style={styles.trackTitle}>{item.title}</Text>
-              <Text style={styles.trackArtist}>{item.artist}</Text>
+              <Text style={styles.trackTitle} numberOfLines={2}>
+                {item.name}
+              </Text>
             </View>
-            <Text style={styles.trackDuration}>{item.duration}</Text>
+            {loadingTrack === item.url && (
+              <ActivityIndicator color="#00E5FF" size="small" />
+            )}
           </TouchableOpacity>
         )}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>No matches found</Text>
+          !searching && query.trim() ? (
+            <Text style={styles.emptyText}>No results</Text>
+          ) : null
         }
       />
 
       {nowPlaying && (
         <View style={styles.miniPlayer}>
-          <View style={styles.miniPlayerArt} />
+          {nowPlaying.thumbnailUrl ? (
+            <Image
+              source={{ uri: nowPlaying.thumbnailUrl }}
+              style={styles.miniPlayerArt}
+            />
+          ) : (
+            <View style={styles.miniPlayerArt} />
+          )}
           <View style={styles.miniPlayerInfo}>
             <Text style={styles.miniPlayerTitle} numberOfLines={1}>
-              {nowPlaying.title}
-            </Text>
-            <Text style={styles.miniPlayerArtist} numberOfLines={1}>
-              {nowPlaying.artist}
+              {nowPlaying.name}
             </Text>
           </View>
-          <TouchableOpacity style={styles.playButton}>
-            <Text style={styles.playButtonText}>▶</Text>
+          <TouchableOpacity
+            style={styles.playButton}
+            onPress={togglePlayPause}
+          >
+            <Text style={styles.playButtonText}>
+              {isPlaying ? '⏸' : '▶'}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -128,6 +246,15 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
   },
+  loadingIndicator: {
+    marginBottom: 8,
+  },
+  errorText: {
+    color: '#FF6B6B',
+    textAlign: 'center',
+    marginBottom: 8,
+    paddingHorizontal: 20,
+  },
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 100,
@@ -151,17 +278,8 @@ const styles = StyleSheet.create({
   },
   trackTitle: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-  },
-  trackArtist: {
-    color: '#8A8A9A',
-    fontSize: 13,
-    marginTop: 2,
-  },
-  trackDuration: {
-    color: '#8A8A9A',
-    fontSize: 13,
   },
   emptyText: {
     color: '#8A8A9A',
@@ -195,11 +313,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
-  },
-  miniPlayerArtist: {
-    color: '#8A8A9A',
-    fontSize: 12,
-    marginTop: 2,
   },
   playButton: {
     width: 40,
