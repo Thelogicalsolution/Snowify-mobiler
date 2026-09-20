@@ -16,7 +16,8 @@
     "react": "19.2.3",
     "react-native": "0.87.1",
     "react-native-safe-area-context": "^5.9.1",
-    "react-native-screens": "^4.28.0"
+    "react-native-screens": "^4.28.0",
+    "react-native-track-player": "^4.1.2"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
