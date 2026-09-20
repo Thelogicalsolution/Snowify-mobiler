@@ -39,6 +39,7 @@ function AppContent() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#00E5FF',
   },
 });
 
