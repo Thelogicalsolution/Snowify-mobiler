@@ -1,4 +1,4 @@
-﻿package com.snowifymobile
+package com.snowifymobile
 
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -14,14 +14,21 @@ import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.localization.ContentCountry
 
 class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     init {
         try {
-            NewPipe.init(OkHttpDownloader.getInstance())
+            NewPipe.init(
+                OkHttpDownloader.getInstance(),
+                Localization("en", "US"),
+                ContentCountry("US")
+            )
         } catch (e: Exception) {
+            // Already initialized, safe to ignore
         }
     }
 
