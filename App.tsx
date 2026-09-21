@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
-  SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
@@ -16,11 +15,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import TrackPlayer, {
-  Capability,
-  State,
-  usePlaybackState,
-} from 'react-native-track-player';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import TrackPlayer, { useIsPlaying } from '@rntp/player';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
 
 type SearchResult = {
@@ -33,16 +29,10 @@ let playerSetupDone = false;
 
 async function setupPlayer() {
   if (playerSetupDone) return;
-  await TrackPlayer.setupPlayer();
-  await TrackPlayer.updateOptions({
-    capabilities: [
-      Capability.Play,
-      Capability.Pause,
-      Capability.SkipToNext,
-      Capability.SkipToPrevious,
-      Capability.Stop,
-    ],
-    compactCapabilities: [Capability.Play, Capability.Pause],
+  await TrackPlayer.setupPlayer({
+    contentType: 'music',
+    handleAudioBecomingNoisy: true,
+    android: { wakeMode: 'network' },
   });
   playerSetupDone = true;
 }
@@ -55,11 +45,13 @@ function App() {
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
 
-  const playbackState = usePlaybackState();
+  const playing = useIsPlaying();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    setupPlayer();
+    setupPlayer().catch(error => {
+      setSearchError(error?.message ?? 'Audio player failed to initialize');
+    });
   }, []);
 
   useEffect(() => {
@@ -99,14 +91,14 @@ function App() {
     try {
       const stream = await getStreamUrl(item.url);
 
-      await TrackPlayer.reset();
-      await TrackPlayer.add({
-        id: item.url,
-        url: stream.streamUrl,
-        title: stream.title || item.name,
-        artist: 'YouTube',
-        artwork: stream.thumbnailUrl || item.thumbnailUrl,
-      });
+      await TrackPlayer.setMediaItems([
+        {
+          url: stream.streamUrl,
+          title: stream.title || item.name,
+          artist: 'YouTube',
+          artworkUrl: stream.thumbnailUrl || item.thumbnailUrl,
+        },
+      ]);
       await TrackPlayer.play();
       setNowPlaying(item);
     } catch (e: any) {
@@ -117,18 +109,16 @@ function App() {
   }
 
   async function togglePlayPause() {
-    if (playbackState.state === State.Playing) {
+    if (playing) {
       await TrackPlayer.pause();
     } else {
       await TrackPlayer.play();
     }
   }
 
-  const isPlaying = playbackState.state === State.Playing;
-
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#0D0D12" />
+      <StatusBar barStyle="light-content" />
 
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Snowify</Text>
@@ -145,15 +135,10 @@ function App() {
       </View>
 
       {searching && (
-        <ActivityIndicator
-          style={styles.loadingIndicator}
-          color="#00E5FF"
-        />
+        <ActivityIndicator style={styles.loadingIndicator} color="#00E5FF" />
       )}
 
-      {searchError && (
-        <Text style={styles.errorText}>{searchError}</Text>
-      )}
+      {searchError && <Text style={styles.errorText}>{searchError}</Text>}
 
       <FlatList
         data={results}
@@ -186,7 +171,7 @@ function App() {
         ListEmptyComponent={
           !searching && query.trim() ? (
             <Text style={styles.emptyText}>No results</Text>
-          ) : null
+          ) : undefined
         }
       />
 
@@ -205,13 +190,8 @@ function App() {
               {nowPlaying.name}
             </Text>
           </View>
-          <TouchableOpacity
-            style={styles.playButton}
-            onPress={togglePlayPause}
-          >
-            <Text style={styles.playButtonText}>
-              {isPlaying ? '⏸' : '▶'}
-            </Text>
+          <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
+            <Text style={styles.playButtonText}>{playing ? '⏸' : '▶'}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -220,24 +200,10 @@ function App() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#0D0D12',
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  headerTitle: {
-    color: '#00E5FF',
-    fontSize: 28,
-    fontWeight: '700',
-  },
-  searchContainer: {
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-  },
+  safeArea: { flex: 1, backgroundColor: '#0D0D12' },
+  header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
+  headerTitle: { color: '#00E5FF', fontSize: 28, fontWeight: '700' },
+  searchContainer: { paddingHorizontal: 20, paddingBottom: 12 },
   searchInput: {
     backgroundColor: '#1A1A22',
     borderRadius: 12,
@@ -246,19 +212,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
   },
-  loadingIndicator: {
-    marginBottom: 8,
-  },
+  loadingIndicator: { marginBottom: 8 },
   errorText: {
     color: '#FF6B6B',
     textAlign: 'center',
     marginBottom: 8,
     paddingHorizontal: 20,
   },
-  listContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 100,
-  },
+  listContent: { paddingHorizontal: 20, paddingBottom: 100 },
   trackRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -273,19 +234,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#2A2A34',
     marginRight: 12,
   },
-  trackInfo: {
-    flex: 1,
-  },
-  trackTitle: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  emptyText: {
-    color: '#8A8A9A',
-    textAlign: 'center',
-    marginTop: 40,
-  },
+  trackInfo: { flex: 1 },
+  trackTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
+  emptyText: { color: '#8A8A9A', textAlign: 'center', marginTop: 40 },
   miniPlayer: {
     position: 'absolute',
     bottom: 0,
@@ -306,14 +257,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#2A2A34',
     marginRight: 12,
   },
-  miniPlayerInfo: {
-    flex: 1,
-  },
-  miniPlayerTitle: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+  miniPlayerInfo: { flex: 1 },
+  miniPlayerTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   playButton: {
     width: 40,
     height: 40,
@@ -322,10 +267,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  playButtonText: {
-    color: '#0D0D12',
-    fontSize: 16,
-  },
+  playButtonText: { color: '#0D0D12', fontSize: 16 },
 });
 
 export default App;
