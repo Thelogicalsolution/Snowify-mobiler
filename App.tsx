@@ -15,7 +15,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import TrackPlayer, { useIsPlaying } from '@rntp/player';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
 
@@ -24,6 +27,12 @@ type SearchResult = {
   name: string;
   thumbnailUrl: string;
 };
+
+const ACCENT = '#A855F7';
+const BG = '#0B0B0F';
+const CARD = '#17171D';
+const BORDER = '#252530';
+const TEXT_DIM = '#8A8A9A';
 
 let playerSetupDone = false;
 
@@ -38,12 +47,17 @@ async function setupPlayer() {
 }
 
 function App() {
+  const insets = useSafeAreaInsets();
+
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
+  const [liked, setLiked] = useState<Record<string, boolean>>({});
+  const [shuffleOn, setShuffleOn] = useState(false);
+  const [repeatOn, setRepeatOn] = useState(false);
 
   const playing = useIsPlaying();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,8 +130,12 @@ function App() {
     }
   }
 
+  function toggleLike(url: string) {
+    setLiked(prev => ({ ...prev, [url]: !prev[url] }));
+  }
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" />
 
       <View style={styles.header}>
@@ -127,15 +145,15 @@ function App() {
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search YouTube..."
-          placeholderTextColor="#8A8A9A"
+          placeholder="What do you want to listen to?"
+          placeholderTextColor={TEXT_DIM}
           value={query}
           onChangeText={setQuery}
         />
       </View>
 
       {searching && (
-        <ActivityIndicator style={styles.loadingIndicator} color="#00E5FF" />
+        <ActivityIndicator style={styles.loadingIndicator} color={ACCENT} />
       )}
 
       {searchError && <Text style={styles.errorText}>{searchError}</Text>}
@@ -143,13 +161,17 @@ function App() {
       <FlatList
         data={results}
         keyExtractor={item => item.url}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => (
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: nowPlaying ? 110 + insets.bottom : 24 },
+        ]}
+        renderItem={({ item, index }) => (
           <TouchableOpacity
             style={styles.trackRow}
             onPress={() => handleSelectTrack(item)}
             disabled={loadingTrack === item.url}
           >
+            <Text style={styles.trackIndex}>{index + 1}</Text>
             {item.thumbnailUrl ? (
               <Image
                 source={{ uri: item.thumbnailUrl }}
@@ -163,8 +185,22 @@ function App() {
                 {item.name}
               </Text>
             </View>
-            {loadingTrack === item.url && (
-              <ActivityIndicator color="#00E5FF" size="small" />
+            {loadingTrack === item.url ? (
+              <ActivityIndicator color={ACCENT} size="small" />
+            ) : (
+              <TouchableOpacity
+                hitSlop={10}
+                onPress={() => toggleLike(item.url)}
+              >
+                <Text
+                  style={[
+                    styles.heartIcon,
+                    liked[item.url] && styles.heartIconActive,
+                  ]}
+                >
+                  ♥
+                </Text>
+              </TouchableOpacity>
             )}
           </TouchableOpacity>
         )}
@@ -176,23 +212,94 @@ function App() {
       />
 
       {nowPlaying && (
-        <View style={styles.miniPlayer}>
-          {nowPlaying.thumbnailUrl ? (
-            <Image
-              source={{ uri: nowPlaying.thumbnailUrl }}
-              style={styles.miniPlayerArt}
-            />
-          ) : (
-            <View style={styles.miniPlayerArt} />
-          )}
-          <View style={styles.miniPlayerInfo}>
-            <Text style={styles.miniPlayerTitle} numberOfLines={1}>
-              {nowPlaying.name}
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
-            <Text style={styles.playButtonText}>{playing ? '⏸' : '▶'}</Text>
+        <View
+          style={[
+            styles.miniPlayer,
+            { paddingBottom: 10 + insets.bottom },
+          ]}
+        >
+          <TouchableOpacity style={styles.miniPlayerTop}>
+            {nowPlaying.thumbnailUrl ? (
+              <Image
+                source={{ uri: nowPlaying.thumbnailUrl }}
+                style={styles.miniPlayerArt}
+              />
+            ) : (
+              <View style={styles.miniPlayerArt} />
+            )}
+            <View style={styles.miniPlayerInfo}>
+              <Text style={styles.miniPlayerTitle} numberOfLines={1}>
+                {nowPlaying.name}
+              </Text>
+              <Text style={styles.miniPlayerArtist} numberOfLines={1}>
+                YouTube
+              </Text>
+            </View>
+            <TouchableOpacity
+              hitSlop={10}
+              onPress={() => toggleLike(nowPlaying.url)}
+            >
+              <Text
+                style={[
+                  styles.heartIcon,
+                  liked[nowPlaying.url] && styles.heartIconActive,
+                ]}
+              >
+                ♥
+              </Text>
+            </TouchableOpacity>
           </TouchableOpacity>
+
+          <View style={styles.transportRow}>
+            <TouchableOpacity
+              hitSlop={10}
+              onPress={() => setShuffleOn(s => !s)}
+            >
+              <Text
+                style={[
+                  styles.transportIconSmall,
+                  shuffleOn && styles.transportIconActive,
+                ]}
+              >
+                ⤨
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity hitSlop={10} disabled>
+              <Text style={[styles.transportIconSmall, styles.disabledIcon]}>
+                ⏮
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.playButton}
+              onPress={togglePlayPause}
+            >
+              <Text style={styles.playButtonText}>
+                {playing ? '⏸' : '▶'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity hitSlop={10} disabled>
+              <Text style={[styles.transportIconSmall, styles.disabledIcon]}>
+                ⏭
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              hitSlop={10}
+              onPress={() => setRepeatOn(r => !r)}
+            >
+              <Text
+                style={[
+                  styles.transportIconSmall,
+                  repeatOn && styles.transportIconActive,
+                ]}
+              >
+                ⟳
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </SafeAreaView>
@@ -200,15 +307,15 @@ function App() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#0D0D12' },
+  safeArea: { flex: 1, backgroundColor: BG },
   header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
-  headerTitle: { color: '#00E5FF', fontSize: 28, fontWeight: '700' },
+  headerTitle: { color: ACCENT, fontSize: 28, fontWeight: '700' },
   searchContainer: { paddingHorizontal: 20, paddingBottom: 12 },
   searchInput: {
-    backgroundColor: '#1A1A22',
+    backgroundColor: CARD,
     borderRadius: 12,
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     color: '#FFFFFF',
     fontSize: 15,
   },
@@ -219,55 +326,76 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingHorizontal: 20,
   },
-  listContent: { paddingHorizontal: 20, paddingBottom: 100 },
+  listContent: { paddingHorizontal: 20 },
   trackRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#2A2A34',
+    borderBottomColor: BORDER,
+  },
+  trackIndex: {
+    color: TEXT_DIM,
+    width: 22,
+    fontSize: 13,
   },
   trackArt: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: '#2A2A34',
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: CARD,
     marginRight: 12,
   },
   trackInfo: { flex: 1 },
   trackTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
-  emptyText: { color: '#8A8A9A', textAlign: 'center', marginTop: 40 },
+  emptyText: { color: TEXT_DIM, textAlign: 'center', marginTop: 40 },
+  heartIcon: { color: TEXT_DIM, fontSize: 18, paddingHorizontal: 4 },
+  heartIconActive: { color: ACCENT },
   miniPlayer: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
+    backgroundColor: CARD,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: BORDER,
+  },
+  miniPlayerTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1A1A22',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#2A2A34',
+    marginBottom: 8,
   },
   miniPlayerArt: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: '#2A2A34',
+    width: 40,
+    height: 40,
+    borderRadius: 6,
+    backgroundColor: BORDER,
     marginRight: 12,
   },
   miniPlayerInfo: { flex: 1 },
-  miniPlayerTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
+  miniPlayerTitle: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  miniPlayerArtist: { color: TEXT_DIM, fontSize: 11, marginTop: 2 },
+  transportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 28,
+    paddingVertical: 4,
+  },
+  transportIconSmall: { color: '#FFFFFF', fontSize: 18 },
+  transportIconActive: { color: ACCENT },
+  disabledIcon: { color: BORDER },
   playButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#00E5FF',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  playButtonText: { color: '#0D0D12', fontSize: 16 },
+  playButtonText: { color: '#0B0B0F', fontSize: 16 },
 });
 
 export default App;
