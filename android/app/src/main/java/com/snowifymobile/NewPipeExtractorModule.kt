@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.localization.ContentCountry
@@ -47,6 +48,13 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                 val results: WritableArray = Arguments.createArray()
 
                 for (item in searchExtractor.initialPage.items) {
+                    // Only include actual playable videos.
+                    // This skips mixes/radios, playlists, and channels,
+                    // which have URLs the stream extractor can't play directly.
+                    if (item !is StreamInfoItem) {
+                        continue
+                    }
+
                     val map: WritableMap = Arguments.createMap()
                     map.putString("url", item.url)
                     map.putString("name", item.name)
