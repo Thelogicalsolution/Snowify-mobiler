@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import {
+  SafeAreaProvider,
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
@@ -46,7 +47,7 @@ async function setupPlayer() {
   playerSetupDone = true;
 }
 
-function App() {
+function AppContent() {
   const insets = useSafeAreaInsets();
 
   const [query, setQuery] = useState('');
@@ -303,6 +304,14 @@ function App() {
         </View>
       )}
     </SafeAreaView>
+  );
+}
+
+function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
   );
 }
 
