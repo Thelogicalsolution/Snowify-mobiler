@@ -20,7 +20,12 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import TrackPlayer, { useIsPlaying } from '@rntp/player';
+import TrackPlayer, {
+  Event,
+  RepeatMode,
+  useIsPlaying,
+  useProgress,
+} from '@rntp/player';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
 
 type SearchResult = {
@@ -28,6 +33,8 @@ type SearchResult = {
   name: string;
   thumbnailUrl: string;
 };
+
+type RepeatSetting = 'off' | 'all' | 'one';
 
 const ACCENT = '#A855F7';
 const BG = '#0B0B0F';
@@ -47,6 +54,69 @@ async function setupPlayer() {
   playerSetupDone = true;
 }
 
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) seconds = 0;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function shuffledOrder(length: number, frontIndex: number): number[] {
+  const indices = Array.from({ length }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  if (frontIndex >= 0) {
+    const pos = indices.indexOf(frontIndex);
+    if (pos > 0) {
+      indices.splice(pos, 1);
+      indices.unshift(frontIndex);
+    }
+  }
+  return indices;
+}
+
+function DraggableBar({
+  value,
+  onChange,
+  height = 4,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  height?: number;
+}) {
+  const [width, setWidth] = useState(0);
+  const clamped = Math.max(0, Math.min(1, value));
+
+  function handleTouch(evt: any) {
+    if (!width) return;
+    const x = evt.nativeEvent.locationX;
+    const v = Math.max(0, Math.min(1, x / width));
+    onChange(v);
+  }
+
+  return (
+    <View
+      style={[styles.barTrack, { height }]}
+      onLayout={e => setWidth(e.nativeEvent.layout.width)}
+      onStartShouldSetResponder={() => true}
+      onMoveShouldSetResponder={() => true}
+      onResponderGrant={handleTouch}
+      onResponderMove={handleTouch}
+    >
+      <View
+        style={[
+          styles.barFill,
+          { width: `${clamped * 100}%`, height },
+        ]}
+      />
+    </View>
+  );
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets();
 
@@ -57,10 +127,17 @@ function AppContent() {
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
   const [liked, setLiked] = useState<Record<string, boolean>>({});
+
+  const [queue, setQueue] = useState<SearchResult[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
   const [shuffleOn, setShuffleOn] = useState(false);
-  const [repeatOn, setRepeatOn] = useState(false);
+  const [shuffleOrder, setShuffleOrder] = useState<number[]>([]);
+  const [shufflePos, setShufflePos] = useState(0);
+  const [repeatMode, setRepeatMode] = useState<RepeatSetting>('off');
+  const [volume, setVolume] = useState(1);
 
   const playing = useIsPlaying();
+  const progress = useProgress(0.5);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -68,6 +145,31 @@ function AppContent() {
       setSearchError(error?.message ?? 'Audio player failed to initialize');
     });
   }, []);
+
+  useEffect(() => {
+    if (!playerSetupDone) return;
+    TrackPlayer.setVolume(volume);
+  }, [volume]);
+
+  useEffect(() => {
+    if (!playerSetupDone) return;
+    TrackPlayer.setRepeatMode(
+      repeatMode === 'one' ? RepeatMode.One : RepeatMode.Off,
+    );
+  }, [repeatMode]);
+
+  const goNextRef = useRef<() => void>(() => {});
+  const goPreviousRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
+      if (repeatMode === 'all') {
+        goNextRef.current();
+      }
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repeatMode]);
 
   useEffect(() => {
     if (debounceRef.current) {
@@ -101,7 +203,14 @@ function AppContent() {
     };
   }, [query]);
 
-  async function handleSelectTrack(item: SearchResult) {
+  async function playAtIndex(
+    list: SearchResult[],
+    index: number,
+    isNewQueue: boolean,
+  ) {
+    const item = list[index];
+    if (!item) return;
+
     setLoadingTrack(item.url);
     try {
       const stream = await getStreamUrl(item.url);
@@ -115,12 +224,100 @@ function AppContent() {
         },
       ]);
       await TrackPlayer.play();
+
+      setQueue(list);
+      setQueueIndex(index);
       setNowPlaying(item);
+
+      if (isNewQueue) {
+        const order = shuffledOrder(list.length, index);
+        setShuffleOrder(order);
+        setShufflePos(0);
+      } else if (shuffleOn) {
+        const pos = shuffleOrder.indexOf(index);
+        if (pos >= 0) setShufflePos(pos);
+      }
     } catch (e: any) {
       setSearchError(e?.message ?? 'Could not play this track');
     } finally {
       setLoadingTrack(null);
     }
+  }
+
+  function handleSelectTrack(item: SearchResult, index: number) {
+    playAtIndex(results, index, true);
+  }
+
+  function goNext() {
+    if (queue.length === 0) return;
+
+    if (shuffleOn) {
+      let nextPos = shufflePos + 1;
+      if (nextPos >= shuffleOrder.length) {
+        if (repeatMode === 'off') return;
+        const newOrder = shuffledOrder(queue.length, -1);
+        setShuffleOrder(newOrder);
+        setShufflePos(0);
+        playAtIndex(queue, newOrder[0], false);
+        return;
+      }
+      setShufflePos(nextPos);
+      playAtIndex(queue, shuffleOrder[nextPos], false);
+    } else {
+      let nextIndex = queueIndex + 1;
+      if (nextIndex >= queue.length) {
+        if (repeatMode === 'off') return;
+        nextIndex = 0;
+      }
+      playAtIndex(queue, nextIndex, false);
+    }
+  }
+
+  function goPrevious() {
+    if (queue.length === 0) return;
+
+    if (progress.position > 3) {
+      TrackPlayer.seekTo(0);
+      return;
+    }
+
+    if (shuffleOn) {
+      let prevPos = shufflePos - 1;
+      if (prevPos < 0) {
+        if (repeatMode === 'off') return;
+        prevPos = shuffleOrder.length - 1;
+      }
+      setShufflePos(prevPos);
+      playAtIndex(queue, shuffleOrder[prevPos], false);
+    } else {
+      let prevIndex = queueIndex - 1;
+      if (prevIndex < 0) {
+        if (repeatMode === 'off') return;
+        prevIndex = queue.length - 1;
+      }
+      playAtIndex(queue, prevIndex, false);
+    }
+  }
+
+  goNextRef.current = goNext;
+  goPreviousRef.current = goPrevious;
+
+  function toggleShuffle() {
+    setShuffleOn(on => {
+      const next = !on;
+      if (next && queue.length > 0) {
+        const order = shuffledOrder(queue.length, queueIndex);
+        setShuffleOrder(order);
+        setShufflePos(0);
+      }
+      return next;
+    });
+  }
+
+  function cycleRepeat() {
+    setRepeatMode(mode =>
+      mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off',
+    );
   }
 
   async function togglePlayPause() {
@@ -164,12 +361,12 @@ function AppContent() {
         keyExtractor={item => item.url}
         contentContainerStyle={[
           styles.listContent,
-          { paddingBottom: nowPlaying ? 110 + insets.bottom : 24 },
+          { paddingBottom: nowPlaying ? 150 + insets.bottom : 24 },
         ]}
         renderItem={({ item, index }) => (
           <TouchableOpacity
             style={styles.trackRow}
-            onPress={() => handleSelectTrack(item)}
+            onPress={() => handleSelectTrack(item, index)}
             disabled={loadingTrack === item.url}
           >
             <Text style={styles.trackIndex}>{index + 1}</Text>
@@ -213,13 +410,19 @@ function AppContent() {
       />
 
       {nowPlaying && (
-        <View
-          style={[
-            styles.miniPlayer,
-            { paddingBottom: 10 + insets.bottom },
-          ]}
-        >
-          <TouchableOpacity style={styles.miniPlayerTop}>
+        <View style={[styles.miniPlayer, { paddingBottom: 10 + insets.bottom }]}>
+          <DraggableBar
+            value={progress.duration > 0 ? progress.position / progress.duration : 0}
+            onChange={v => TrackPlayer.seekTo(v * progress.duration)}
+            height={3}
+          />
+
+          <View style={styles.timeRow}>
+            <Text style={styles.timeText}>{formatTime(progress.position)}</Text>
+            <Text style={styles.timeText}>{formatTime(progress.duration)}</Text>
+          </View>
+
+          <View style={styles.miniPlayerTop}>
             {nowPlaying.thumbnailUrl ? (
               <Image
                 source={{ uri: nowPlaying.thumbnailUrl }}
@@ -249,13 +452,10 @@ function AppContent() {
                 ♥
               </Text>
             </TouchableOpacity>
-          </TouchableOpacity>
+          </View>
 
           <View style={styles.transportRow}>
-            <TouchableOpacity
-              hitSlop={10}
-              onPress={() => setShuffleOn(s => !s)}
-            >
+            <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
               <Text
                 style={[
                   styles.transportIconSmall,
@@ -266,10 +466,8 @@ function AppContent() {
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity hitSlop={10} disabled>
-              <Text style={[styles.transportIconSmall, styles.disabledIcon]}>
-                ⏮
-              </Text>
+            <TouchableOpacity hitSlop={10} onPress={goPrevious}>
+              <Text style={styles.transportIconSmall}>⏮</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -281,25 +479,32 @@ function AppContent() {
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity hitSlop={10} disabled>
-              <Text style={[styles.transportIconSmall, styles.disabledIcon]}>
-                ⏭
-              </Text>
+            <TouchableOpacity hitSlop={10} onPress={goNext}>
+              <Text style={styles.transportIconSmall}>⏭</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              hitSlop={10}
-              onPress={() => setRepeatOn(r => !r)}
-            >
-              <Text
-                style={[
-                  styles.transportIconSmall,
-                  repeatOn && styles.transportIconActive,
-                ]}
-              >
-                ⟳
-              </Text>
+            <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
+              <View>
+                <Text
+                  style={[
+                    styles.transportIconSmall,
+                    repeatMode !== 'off' && styles.transportIconActive,
+                  ]}
+                >
+                  ⟳
+                </Text>
+                {repeatMode === 'one' && (
+                  <Text style={styles.repeatOneBadge}>1</Text>
+                )}
+              </View>
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.volumeRow}>
+            <Text style={styles.volumeIcon}>🔊</Text>
+            <View style={styles.volumeBarWrapper}>
+              <DraggableBar value={volume} onChange={setVolume} height={3} />
+            </View>
           </View>
         </View>
       )}
@@ -343,11 +548,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER,
   },
-  trackIndex: {
-    color: TEXT_DIM,
-    width: 22,
-    fontSize: 13,
-  },
+  trackIndex: { color: TEXT_DIM, width: 22, fontSize: 13 },
   trackArt: {
     width: 44,
     height: 44,
@@ -367,14 +568,28 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: CARD,
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER,
   },
+  barTrack: {
+    width: '100%',
+    backgroundColor: BORDER,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  barFill: { backgroundColor: ACCENT, borderRadius: 2 },
+  timeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  timeText: { color: TEXT_DIM, fontSize: 10 },
   miniPlayerTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginTop: 8,
+    marginBottom: 4,
   },
   miniPlayerArt: {
     width: 40,
@@ -395,7 +610,14 @@ const styles = StyleSheet.create({
   },
   transportIconSmall: { color: '#FFFFFF', fontSize: 18 },
   transportIconActive: { color: ACCENT },
-  disabledIcon: { color: BORDER },
+  repeatOneBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -8,
+    color: ACCENT,
+    fontSize: 9,
+    fontWeight: '700',
+  },
   playButton: {
     width: 44,
     height: 44,
@@ -405,6 +627,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   playButtonText: { color: '#0B0B0F', fontSize: 16 },
+  volumeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 4,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  volumeIcon: { fontSize: 12 },
+  volumeBarWrapper: { flex: 1 },
 });
 
 export default App;
