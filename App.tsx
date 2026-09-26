@@ -6,8 +6,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Image,
+  Modal,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -27,20 +30,27 @@ import TrackPlayer, {
   useProgress,
 } from '@rntp/player';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
+import {
+  Track,
+  Playlist,
+  loadLikedSongs,
+  saveLikedSongs,
+  loadPlaylists,
+  savePlaylists,
+  makePlaylistId,
+} from './PlaylistStore';
 
-type SearchResult = {
-  url: string;
-  name: string;
-  thumbnailUrl: string;
-};
-
+type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
+type ViewName = 'search' | 'library' | 'playlist';
 
 const ACCENT = '#A855F7';
+const LIKE_RED = '#FF3B5C';
 const BG = '#0B0B0F';
 const CARD = '#17171D';
 const BORDER = '#252530';
 const TEXT_DIM = '#8A8A9A';
+const TAB_BAR_HEIGHT = 52;
 
 let playerSetupDone = false;
 
@@ -159,8 +169,124 @@ function DraggableBar({
   );
 }
 
+function AnimatedHeart({
+  liked,
+  onLikeToggle,
+  size = 18,
+}: {
+  liked: boolean;
+  onLikeToggle: () => void;
+  size?: number;
+}) {
+  const crack = useRef(new Animated.Value(0)).current;
+  const pop = useRef(new Animated.Value(1)).current;
+  const [cracking, setCracking] = useState(false);
+
+  function handlePress() {
+    if (liked) {
+      setCracking(true);
+      crack.setValue(0);
+      Animated.timing(crack, {
+        toValue: 1,
+        duration: 380,
+        useNativeDriver: true,
+      }).start(() => {
+        setCracking(false);
+        crack.setValue(0);
+        onLikeToggle();
+      });
+    } else {
+      onLikeToggle();
+      pop.setValue(1.4);
+      Animated.spring(pop, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 4,
+      }).start();
+    }
+  }
+
+  const leftStyle = {
+    transform: [
+      { translateX: crack.interpolate({ inputRange: [0, 1], outputRange: [0, -7] }) },
+      {
+        rotate: crack.interpolate({
+          inputRange: [0, 1],
+          outputRange: ['0deg', '-20deg'],
+        }),
+      },
+    ],
+    opacity: crack.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+  };
+  const rightStyle = {
+    transform: [
+      { translateX: crack.interpolate({ inputRange: [0, 1], outputRange: [0, 7] }) },
+      {
+        rotate: crack.interpolate({
+          inputRange: [0, 1],
+          outputRange: ['0deg', '20deg'],
+        }),
+      },
+    ],
+    opacity: crack.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+  };
+
+  return (
+    <TouchableOpacity hitSlop={10} onPress={handlePress}>
+      {cracking ? (
+        <View style={{ width: size, height: size }}>
+          <Animated.View
+            style={[
+              styles.heartHalfLeft,
+              { width: size / 2, height: size },
+              leftStyle,
+            ]}
+          >
+            <Text style={[styles.heartGlyph, { fontSize: size, width: size, color: LIKE_RED }]}>
+              ♥
+            </Text>
+          </Animated.View>
+          <Animated.View
+            style={[
+              styles.heartHalfRight,
+              { width: size / 2, height: size, left: size / 2 },
+              rightStyle,
+            ]}
+          >
+            <Text
+              style={[
+                styles.heartGlyph,
+                {
+                  fontSize: size,
+                  width: size,
+                  marginLeft: -size / 2,
+                  color: LIKE_RED,
+                },
+              ]}
+            >
+              ♥
+            </Text>
+          </Animated.View>
+        </View>
+      ) : (
+        <Animated.Text
+          style={[
+            styles.heartIcon,
+            { fontSize: size, transform: [{ scale: pop }] },
+            liked && styles.heartIconActive,
+          ]}
+        >
+          ♥
+        </Animated.Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets();
+
+  const [view, setView] = useState<ViewName>('search');
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -168,7 +294,6 @@ function AppContent() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
-  const [liked, setLiked] = useState<Record<string, boolean>>({});
 
   const [queue, setQueue] = useState<SearchResult[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
@@ -177,6 +302,21 @@ function AppContent() {
   const [shufflePos, setShufflePos] = useState(0);
   const [repeatMode, setRepeatMode] = useState<RepeatSetting>('off');
   const [volume, setVolume] = useState(1);
+
+  const [storeLoaded, setStoreLoaded] = useState(false);
+  const [likedSongs, setLikedSongs] = useState<Track[]>([]);
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [viewingPlaylist, setViewingPlaylist] = useState<{
+    id: string;
+    name: string;
+    tracks: Track[];
+  } | null>(null);
+
+  const [addToPlaylistTarget, setAddToPlaylistTarget] =
+    useState<Track | null>(null);
+  const [newPlaylistModalVisible, setNewPlaylistModalVisible] =
+    useState(false);
+  const [newPlaylistName, setNewPlaylistName] = useState('');
 
   const playing = useIsPlaying();
   const progress = useProgress(0.5);
@@ -187,6 +327,28 @@ function AppContent() {
       setSearchError(error?.message ?? 'Audio player failed to initialize');
     });
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      const [liked, pls] = await Promise.all([
+        loadLikedSongs(),
+        loadPlaylists(),
+      ]);
+      setLikedSongs(liked);
+      setPlaylists(pls);
+      setStoreLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    saveLikedSongs(likedSongs);
+  }, [likedSongs, storeLoaded]);
+
+  useEffect(() => {
+    if (!storeLoaded) return;
+    savePlaylists(playlists);
+  }, [playlists, storeLoaded]);
 
   useEffect(() => {
     if (!playerSetupDone) return;
@@ -201,7 +363,6 @@ function AppContent() {
   }, [repeatMode]);
 
   const goNextRef = useRef<() => void>(() => {});
-  const goPreviousRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
@@ -245,6 +406,55 @@ function AppContent() {
     };
   }, [query]);
 
+  function isLiked(url: string): boolean {
+    return likedSongs.some(t => t.url === url);
+  }
+
+  function toggleLike(item: Track) {
+    setLikedSongs(prev =>
+      prev.some(t => t.url === item.url)
+        ? prev.filter(t => t.url !== item.url)
+        : [...prev, item],
+    );
+  }
+
+  function addTrackToPlaylist(playlistId: string, track: Track) {
+    setPlaylists(prev =>
+      prev.map(p =>
+        p.id === playlistId
+          ? {
+              ...p,
+              tracks: p.tracks.some(t => t.url === track.url)
+                ? p.tracks
+                : [...p.tracks, track],
+            }
+          : p,
+      ),
+    );
+    setAddToPlaylistTarget(null);
+  }
+
+  function handleCreatePlaylist() {
+    const name = newPlaylistName.trim() || 'My Playlist';
+    const id = makePlaylistId();
+    const track = addToPlaylistTarget;
+    setPlaylists(prev => [...prev, { id, name, tracks: track ? [track] : [] }]);
+    setNewPlaylistModalVisible(false);
+    setAddToPlaylistTarget(null);
+    setNewPlaylistName('');
+  }
+
+  function openPlaylistView(id: 'liked' | string) {
+    if (id === 'liked') {
+      setViewingPlaylist({ id: 'liked', name: 'Liked Songs', tracks: likedSongs });
+    } else {
+      const pl = playlists.find(p => p.id === id);
+      if (!pl) return;
+      setViewingPlaylist({ id: pl.id, name: pl.name, tracks: pl.tracks });
+    }
+    setView('playlist');
+  }
+
   async function playAtIndex(
     list: SearchResult[],
     index: number,
@@ -284,10 +494,6 @@ function AppContent() {
     } finally {
       setLoadingTrack(null);
     }
-  }
-
-  function handleSelectTrack(item: SearchResult, index: number) {
-    playAtIndex(results, index, true);
   }
 
   function goNext() {
@@ -342,7 +548,6 @@ function AppContent() {
   }
 
   goNextRef.current = goNext;
-  goPreviousRef.current = goPrevious;
 
   function toggleShuffle() {
     setShuffleOn(on => {
@@ -370,89 +575,181 @@ function AppContent() {
     }
   }
 
-  function toggleLike(url: string) {
-    setLiked(prev => ({ ...prev, [url]: !prev[url] }));
+  function renderTrackRow(item: SearchResult, index: number, list: SearchResult[]) {
+    return (
+      <TouchableOpacity
+        key={item.url}
+        style={styles.trackRow}
+        onPress={() => playAtIndex(list, index, true)}
+        disabled={loadingTrack === item.url}
+      >
+        <Text style={styles.trackIndex}>{index + 1}</Text>
+        {item.thumbnailUrl ? (
+          <Image source={{ uri: item.thumbnailUrl }} style={styles.trackArt} />
+        ) : (
+          <View style={styles.trackArt} />
+        )}
+        <View style={styles.trackInfo}>
+          <Text style={styles.trackTitle} numberOfLines={2}>
+            {item.name}
+          </Text>
+        </View>
+        {loadingTrack === item.url ? (
+          <ActivityIndicator color={ACCENT} size="small" />
+        ) : (
+          <View style={styles.rowActions}>
+            <AnimatedHeart
+              liked={isLiked(item.url)}
+              onLikeToggle={() => toggleLike(item)}
+            />
+            <TouchableOpacity
+              hitSlop={10}
+              onPress={() => setAddToPlaylistTarget(item)}
+            >
+              <Text style={styles.dotsIcon}>⋮</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
   }
+
+  const bottomPad =
+    TAB_BAR_HEIGHT + insets.bottom + (nowPlaying ? 150 : 10);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" />
 
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Snowify</Text>
-      </View>
+      {view === 'search' && (
+        <>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Snowify</Text>
+          </View>
 
-      <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="What do you want to listen to?"
-          placeholderTextColor={TEXT_DIM}
-          value={query}
-          onChangeText={setQuery}
-        />
-      </View>
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="What do you want to listen to?"
+              placeholderTextColor={TEXT_DIM}
+              value={query}
+              onChangeText={setQuery}
+            />
+          </View>
 
-      {searching && (
-        <ActivityIndicator style={styles.loadingIndicator} color={ACCENT} />
+          {searching && (
+            <ActivityIndicator style={styles.loadingIndicator} color={ACCENT} />
+          )}
+
+          {searchError && <Text style={styles.errorText}>{searchError}</Text>}
+
+          <FlatList
+            data={results}
+            keyExtractor={item => item.url}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: bottomPad },
+            ]}
+            renderItem={({ item, index }) =>
+              renderTrackRow(item, index, results)
+            }
+            ListEmptyComponent={
+              !searching && query.trim() ? (
+                <Text style={styles.emptyText}>No results</Text>
+              ) : undefined
+            }
+          />
+        </>
       )}
 
-      {searchError && <Text style={styles.errorText}>{searchError}</Text>}
-
-      <FlatList
-        data={results}
-        keyExtractor={item => item.url}
-        contentContainerStyle={[
-          styles.listContent,
-          { paddingBottom: nowPlaying ? 150 + insets.bottom : 24 },
-        ]}
-        renderItem={({ item, index }) => (
-          <TouchableOpacity
-            style={styles.trackRow}
-            onPress={() => handleSelectTrack(item, index)}
-            disabled={loadingTrack === item.url}
-          >
-            <Text style={styles.trackIndex}>{index + 1}</Text>
-            {item.thumbnailUrl ? (
-              <Image
-                source={{ uri: item.thumbnailUrl }}
-                style={styles.trackArt}
-              />
-            ) : (
-              <View style={styles.trackArt} />
-            )}
-            <View style={styles.trackInfo}>
-              <Text style={styles.trackTitle} numberOfLines={2}>
-                {item.name}
-              </Text>
-            </View>
-            {loadingTrack === item.url ? (
-              <ActivityIndicator color={ACCENT} size="small" />
-            ) : (
+      {view === 'library' && (
+        <>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Your Library</Text>
+          </View>
+          <View style={styles.libraryHeaderRow}>
+            <Text style={styles.libraryHeaderLabel}>Playlists</Text>
+            <TouchableOpacity onPress={() => setNewPlaylistModalVisible(true)}>
+              <Text style={styles.libraryAddButton}>+ New</Text>
+            </TouchableOpacity>
+          </View>
+          <FlatList
+            data={playlists}
+            keyExtractor={p => p.id}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: bottomPad },
+            ]}
+            ListHeaderComponent={
               <TouchableOpacity
-                hitSlop={10}
-                onPress={() => toggleLike(item.url)}
+                style={styles.playlistRow}
+                onPress={() => openPlaylistView('liked')}
               >
-                <Text
-                  style={[
-                    styles.heartIcon,
-                    liked[item.url] && styles.heartIconActive,
-                  ]}
-                >
-                  ♥
-                </Text>
+                <View style={styles.likedSongsIcon}>
+                  <Text style={styles.likedSongsIconText}>♥</Text>
+                </View>
+                <View style={styles.trackInfo}>
+                  <Text style={styles.trackTitle}>Liked Songs</Text>
+                  <Text style={styles.playlistSubtitle}>
+                    {likedSongs.length} songs
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            }
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.playlistRow}
+                onPress={() => openPlaylistView(item.id)}
+              >
+                <View style={styles.playlistIcon}>
+                  <Text style={styles.playlistIconText}>🎵</Text>
+                </View>
+                <View style={styles.trackInfo}>
+                  <Text style={styles.trackTitle}>{item.name}</Text>
+                  <Text style={styles.playlistSubtitle}>
+                    {item.tracks.length} songs
+                  </Text>
+                </View>
               </TouchableOpacity>
             )}
-          </TouchableOpacity>
-        )}
-        ListEmptyComponent={
-          !searching && query.trim() ? (
-            <Text style={styles.emptyText}>No results</Text>
-          ) : undefined
-        }
-      />
+          />
+        </>
+      )}
+
+      {view === 'playlist' && viewingPlaylist && (
+        <>
+          <View style={styles.playlistDetailHeader}>
+            <TouchableOpacity onPress={() => setView('library')} hitSlop={10}>
+              <Text style={styles.backArrow}>←</Text>
+            </TouchableOpacity>
+            <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+              {viewingPlaylist.name}
+            </Text>
+          </View>
+          <FlatList
+            data={viewingPlaylist.tracks}
+            keyExtractor={t => t.url}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: bottomPad },
+            ]}
+            renderItem={({ item, index }) =>
+              renderTrackRow(item, index, viewingPlaylist.tracks)
+            }
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No songs yet</Text>
+            }
+          />
+        </>
+      )}
 
       {nowPlaying && (
-        <View style={[styles.miniPlayer, { paddingBottom: 10 + insets.bottom }]}>
+        <View
+          style={[
+            styles.miniPlayer,
+            { bottom: TAB_BAR_HEIGHT + insets.bottom },
+          ]}
+        >
           <View style={styles.progressBarWrapper}>
             <DraggableBar
               value={
@@ -488,19 +785,10 @@ function AppContent() {
                 YouTube
               </Text>
             </View>
-            <TouchableOpacity
-              hitSlop={10}
-              onPress={() => toggleLike(nowPlaying.url)}
-            >
-              <Text
-                style={[
-                  styles.heartIcon,
-                  liked[nowPlaying.url] && styles.heartIconActive,
-                ]}
-              >
-                ♥
-              </Text>
-            </TouchableOpacity>
+            <AnimatedHeart
+              liked={isLiked(nowPlaying.url)}
+              onLikeToggle={() => toggleLike(nowPlaying)}
+            />
           </View>
 
           <View style={styles.transportRow}>
@@ -519,13 +807,8 @@ function AppContent() {
               <Text style={styles.transportIconSmall}>⏮</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.playButton}
-              onPress={togglePlayPause}
-            >
-              <Text style={styles.playButtonText}>
-                {playing ? '⏸' : '▶'}
-              </Text>
+            <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
+              <Text style={styles.playButtonText}>{playing ? '⏸' : '▶'}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity hitSlop={10} onPress={goNext}>
@@ -557,6 +840,122 @@ function AppContent() {
           </View>
         </View>
       )}
+
+      <View style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
+        <TouchableOpacity style={styles.tabButton} onPress={() => setView('search')}>
+          <Text style={[styles.tabIcon, view === 'search' && styles.tabIconActive]}>
+            🔍
+          </Text>
+          <Text
+            style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
+          >
+            Search
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.tabButton}
+          onPress={() => setView('library')}
+        >
+          <Text
+            style={[
+              styles.tabIcon,
+              (view === 'library' || view === 'playlist') &&
+                styles.tabIconActive,
+            ]}
+          >
+            📚
+          </Text>
+          <Text
+            style={[
+              styles.tabLabel,
+              (view === 'library' || view === 'playlist') &&
+                styles.tabLabelActive,
+            ]}
+          >
+            Library
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={!!addToPlaylistTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddToPlaylistTarget(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Add to playlist</Text>
+            <ScrollView style={styles.modalScroll}>
+              {playlists.length === 0 && (
+                <Text style={styles.modalEmptyText}>No playlists yet</Text>
+              )}
+              {playlists.map(p => (
+                <TouchableOpacity
+                  key={p.id}
+                  style={styles.modalRow}
+                  onPress={() => {
+                    if (addToPlaylistTarget) {
+                      addTrackToPlaylist(p.id, addToPlaylistTarget);
+                    }
+                  }}
+                >
+                  <Text style={styles.modalRowText}>{p.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.modalNewPlaylistRow}
+              onPress={() => setNewPlaylistModalVisible(true)}
+            >
+              <Text style={styles.modalNewPlaylistText}>+ New Playlist</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalCancelButton}
+              onPress={() => setAddToPlaylistTarget(null)}
+            >
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={newPlaylistModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNewPlaylistModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Create playlist</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newPlaylistName}
+              onChangeText={setNewPlaylistName}
+              placeholder="My Playlist"
+              placeholderTextColor={TEXT_DIM}
+              autoFocus
+            />
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity
+                onPress={() => {
+                  setNewPlaylistModalVisible(false);
+                  setNewPlaylistName('');
+                }}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalOkButton}
+                onPress={handleCreatePlaylist}
+              >
+                <Text style={styles.modalOkText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -608,22 +1007,72 @@ const styles = StyleSheet.create({
   trackInfo: { flex: 1 },
   trackTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   emptyText: { color: TEXT_DIM, textAlign: 'center', marginTop: 40 },
+  rowActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   heartIcon: { color: TEXT_DIM, fontSize: 18, paddingHorizontal: 4 },
-  heartIconActive: { color: ACCENT },
+  heartIconActive: { color: LIKE_RED },
+  heartHalfLeft: { position: 'absolute', left: 0, top: 0, overflow: 'hidden' },
+  heartHalfRight: { position: 'absolute', top: 0, overflow: 'hidden' },
+  heartGlyph: { textAlign: 'left' },
+  dotsIcon: { color: TEXT_DIM, fontSize: 18, paddingHorizontal: 4 },
+  libraryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  libraryHeaderLabel: { color: TEXT_DIM, fontSize: 12, fontWeight: '700' },
+  libraryAddButton: { color: ACCENT, fontSize: 13, fontWeight: '700' },
+  playlistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  likedSongsIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: LIKE_RED,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  likedSongsIconText: { color: '#FFFFFF', fontSize: 18 },
+  playlistIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: CARD,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  playlistIconText: { fontSize: 18 },
+  playlistSubtitle: { color: TEXT_DIM, fontSize: 12, marginTop: 2 },
+  playlistDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  backArrow: { color: '#FFFFFF', fontSize: 20 },
+  playlistDetailTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '700', flex: 1 },
   miniPlayer: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: CARD,
     paddingHorizontal: 16,
     paddingTop: 8,
+    paddingBottom: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER,
   },
-  progressBarWrapper: {
-    marginHorizontal: 48,
-  },
+  progressBarWrapper: { marginHorizontal: 48 },
   barTouchWrapper: {
     width: '100%',
     paddingVertical: 14,
@@ -695,6 +1144,79 @@ const styles = StyleSheet.create({
   },
   volumeIcon: { fontSize: 12 },
   volumeBarWrapper: { flex: 1 },
+  tabBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: TAB_BAR_HEIGHT,
+    flexDirection: 'row',
+    backgroundColor: CARD,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: BORDER,
+  },
+  tabButton: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 6,
+  },
+  tabIcon: { fontSize: 18, opacity: 0.5 },
+  tabIconActive: { opacity: 1 },
+  tabLabel: { color: TEXT_DIM, fontSize: 10, marginTop: 2 },
+  tabLabelActive: { color: ACCENT, fontWeight: '700' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCard: {
+    width: '85%',
+    backgroundColor: CARD,
+    borderRadius: 14,
+    padding: 20,
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  modalScroll: { maxHeight: 220 },
+  modalEmptyText: { color: TEXT_DIM, fontSize: 13, paddingVertical: 8 },
+  modalRow: {
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  modalRowText: { color: '#FFFFFF', fontSize: 14 },
+  modalNewPlaylistRow: { paddingVertical: 12 },
+  modalNewPlaylistText: { color: ACCENT, fontSize: 14, fontWeight: '700' },
+  modalCancelButton: { alignItems: 'center', paddingTop: 8 },
+  modalCancelText: { color: TEXT_DIM, fontSize: 14 },
+  modalInput: {
+    backgroundColor: BG,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  modalButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 20,
+  },
+  modalOkButton: {
+    backgroundColor: ACCENT,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  modalOkText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
 });
 
 export default App;
