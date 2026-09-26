@@ -50,7 +50,7 @@ const BG = '#0B0B0F';
 const CARD = '#17171D';
 const BORDER = '#252530';
 const TEXT_DIM = '#8A8A9A';
-const TAB_BAR_HEIGHT = 52;
+const TAB_BAR_FALLBACK_HEIGHT = 70;
 
 let playerSetupDone = false;
 
@@ -276,7 +276,7 @@ function AnimatedHeart({
             liked && styles.heartIconActive,
           ]}
         >
-          ♥
+          {liked ? '♥' : '♡'}
         </Animated.Text>
       )}
     </TouchableOpacity>
@@ -287,6 +287,7 @@ function AppContent() {
   const insets = useSafeAreaInsets();
 
   const [view, setView] = useState<ViewName>('search');
+  const [tabBarHeight, setTabBarHeight] = useState(TAB_BAR_FALLBACK_HEIGHT);
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -614,8 +615,7 @@ function AppContent() {
     );
   }
 
-  const bottomPad =
-    TAB_BAR_HEIGHT + insets.bottom + (nowPlaying ? 150 : 10);
+  const bottomPad = tabBarHeight + (nowPlaying ? 150 : 10);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -747,7 +747,7 @@ function AppContent() {
         <View
           style={[
             styles.miniPlayer,
-            { bottom: TAB_BAR_HEIGHT + insets.bottom },
+            { bottom: tabBarHeight },
           ]}
         >
           <View style={styles.progressBarWrapper}>
@@ -841,40 +841,45 @@ function AppContent() {
         </View>
       )}
 
-      <View style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
-        <TouchableOpacity style={styles.tabButton} onPress={() => setView('search')}>
-          <Text style={[styles.tabIcon, view === 'search' && styles.tabIconActive]}>
-            🔍
-          </Text>
-          <Text
-            style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
+      <View
+        style={styles.tabBar}
+        onLayout={e => setTabBarHeight(e.nativeEvent.layout.height)}
+      >
+        <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
+          <TouchableOpacity style={styles.tabButton} onPress={() => setView('search')}>
+            <Text style={[styles.tabIcon, view === 'search' && styles.tabIconActive]}>
+              🔍
+            </Text>
+            <Text
+              style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
+            >
+              Search
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.tabButton}
+            onPress={() => setView('library')}
           >
-            Search
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.tabButton}
-          onPress={() => setView('library')}
-        >
-          <Text
-            style={[
-              styles.tabIcon,
-              (view === 'library' || view === 'playlist') &&
-                styles.tabIconActive,
-            ]}
-          >
-            📚
-          </Text>
-          <Text
-            style={[
-              styles.tabLabel,
-              (view === 'library' || view === 'playlist') &&
-                styles.tabLabelActive,
-            ]}
-          >
-            Library
-          </Text>
-        </TouchableOpacity>
+            <Text
+              style={[
+                styles.tabIcon,
+                (view === 'library' || view === 'playlist') &&
+                  styles.tabIconActive,
+              ]}
+            >
+              📚
+            </Text>
+            <Text
+              style={[
+                styles.tabLabel,
+                (view === 'library' || view === 'playlist') &&
+                  styles.tabLabelActive,
+              ]}
+            >
+              Library
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <Modal
@@ -1149,17 +1154,19 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: TAB_BAR_HEIGHT,
-    flexDirection: 'row',
     backgroundColor: CARD,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER,
+  },
+  tabBarRow: {
+    flexDirection: 'row',
+    paddingTop: 8,
   },
   tabButton: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingTop: 6,
+    paddingVertical: 4,
   },
   tabIcon: { fontSize: 18, opacity: 0.5 },
   tabIconActive: { opacity: 1 },
