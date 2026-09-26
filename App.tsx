@@ -83,33 +83,76 @@ function DraggableBar({
   value,
   onChange,
   height = 4,
+  commitOnRelease = false,
 }: {
   value: number;
   onChange: (v: number) => void;
   height?: number;
+  commitOnRelease?: boolean;
 }) {
-  const [width, setWidth] = useState(0);
-  const clamped = Math.max(0, Math.min(1, value));
+  const wrapperRef = useRef<View>(null);
+  const [dragging, setDragging] = useState(false);
+  const [dragValue, setDragValue] = useState(value);
+  const latestRef = useRef(value);
+  const originXRef = useRef(0);
+  const widthRef = useRef(0);
 
-  function handleTouch(evt: any) {
-    if (!width) return;
-    const x = evt.nativeEvent.locationX;
-    const v = Math.max(0, Math.min(1, x / width));
-    onChange(v);
+  useEffect(() => {
+    if (!dragging) {
+      setDragValue(value);
+      latestRef.current = value;
+    }
+  }, [value, dragging]);
+
+  function pageXToValue(pageX: number): number {
+    if (!widthRef.current) return latestRef.current;
+    const relative = pageX - originXRef.current;
+    return Math.max(0, Math.min(1, relative / widthRef.current));
   }
+
+  function handleGrant(evt: any) {
+    const node = wrapperRef.current;
+    if (node) {
+      node.measure((_x, _y, w, _h, pageX) => {
+        originXRef.current = pageX;
+        widthRef.current = w;
+        const v = pageXToValue(evt.nativeEvent.pageX);
+        latestRef.current = v;
+        setDragging(true);
+        setDragValue(v);
+        if (!commitOnRelease) onChange(v);
+      });
+    }
+  }
+
+  function handleMove(evt: any) {
+    const v = pageXToValue(evt.nativeEvent.pageX);
+    latestRef.current = v;
+    setDragValue(v);
+    if (!commitOnRelease) onChange(v);
+  }
+
+  function handleRelease() {
+    if (commitOnRelease) onChange(latestRef.current);
+    setDragging(false);
+  }
+
+  const displayed = dragging ? dragValue : Math.max(0, Math.min(1, value));
 
   return (
     <View
+      ref={wrapperRef}
       style={styles.barTouchWrapper}
-      onLayout={e => setWidth(e.nativeEvent.layout.width)}
       onStartShouldSetResponder={() => true}
       onMoveShouldSetResponder={() => true}
-      onResponderGrant={handleTouch}
-      onResponderMove={handleTouch}
+      onResponderGrant={handleGrant}
+      onResponderMove={handleMove}
+      onResponderRelease={handleRelease}
+      onResponderTerminate={handleRelease}
     >
       <View style={[styles.barTrack, { height }]}>
         <View
-          style={[styles.barFill, { width: `${clamped * 100}%`, height }]}
+          style={[styles.barFill, { width: `${displayed * 100}%`, height }]}
         />
       </View>
     </View>
@@ -419,6 +462,7 @@ function AppContent() {
               }
               onChange={v => TrackPlayer.seekTo(v * progress.duration)}
               height={3}
+              commitOnRelease
             />
           </View>
 
@@ -578,7 +622,7 @@ const styles = StyleSheet.create({
     borderTopColor: BORDER,
   },
   progressBarWrapper: {
-    marginHorizontal: 28,
+    marginHorizontal: 48,
   },
   barTouchWrapper: {
     width: '100%',
