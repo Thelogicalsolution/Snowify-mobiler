@@ -100,19 +100,18 @@ function DraggableBar({
 
   return (
     <View
-      style={[styles.barTrack, { height }]}
+      style={styles.barTouchWrapper}
       onLayout={e => setWidth(e.nativeEvent.layout.width)}
       onStartShouldSetResponder={() => true}
       onMoveShouldSetResponder={() => true}
       onResponderGrant={handleTouch}
       onResponderMove={handleTouch}
     >
-      <View
-        style={[
-          styles.barFill,
-          { width: `${clamped * 100}%`, height },
-        ]}
-      />
+      <View style={[styles.barTrack, { height }]}>
+        <View
+          style={[styles.barFill, { width: `${clamped * 100}%`, height }]}
+        />
+      </View>
     </View>
   );
 }
@@ -411,11 +410,17 @@ function AppContent() {
 
       {nowPlaying && (
         <View style={[styles.miniPlayer, { paddingBottom: 10 + insets.bottom }]}>
-          <DraggableBar
-            value={progress.duration > 0 ? progress.position / progress.duration : 0}
-            onChange={v => TrackPlayer.seekTo(v * progress.duration)}
-            height={3}
-          />
+          <View style={styles.progressBarWrapper}>
+            <DraggableBar
+              value={
+                progress.duration > 0
+                  ? progress.position / progress.duration
+                  : 0
+              }
+              onChange={v => TrackPlayer.seekTo(v * progress.duration)}
+              height={3}
+            />
+          </View>
 
           <View style={styles.timeRow}>
             <Text style={styles.timeText}>{formatTime(progress.position)}</Text>
@@ -572,6 +577,14 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER,
   },
+  progressBarWrapper: {
+    marginHorizontal: 28,
+  },
+  barTouchWrapper: {
+    width: '100%',
+    paddingVertical: 14,
+    justifyContent: 'center',
+  },
   barTrack: {
     width: '100%',
     backgroundColor: BORDER,
@@ -582,7 +595,8 @@ const styles = StyleSheet.create({
   timeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 4,
+    marginTop: -8,
+    marginHorizontal: 4,
   },
   timeText: { color: TEXT_DIM, fontSize: 10 },
   miniPlayerTop: {
@@ -633,6 +647,7 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 4,
     gap: 8,
+    marginHorizontal: 28,
   },
   volumeIcon: { fontSize: 12 },
   volumeBarWrapper: { flex: 1 },
