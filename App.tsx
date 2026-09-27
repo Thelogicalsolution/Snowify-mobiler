@@ -234,15 +234,19 @@ function AnimatedHeart({
         duration: 380,
         useNativeDriver: true,
       }).start(() => {
-        // Flip the parent's liked state FIRST, so that by the time we
-        // switch back to the plain (non-cracking) heart render below,
-        // it already picks up liked=false. Doing this in the old order
-        // (setCracking(false) before onLikeToggle()) caused a one-frame
-        // flash of a solid red heart, since the plain render briefly
-        // saw cracking=false with a still-stale liked=true.
+        // Flip the parent's liked state first, then unmount the crack
+        // halves. Deliberately NOT resetting crack back to 0 here: since
+        // useNativeDriver bypasses React's commit timing, an imperative
+        // setValue(0) lands on the native side instantly - faster than
+        // setCracking(false) can actually remove the halves from the
+        // tree - which briefly snaps both halves back to fully
+        // overlapping + opaque (i.e. looking like one solid red heart)
+        // for a frame before they're unmounted. Leaving crack at its
+        // finished value (1, fully invisible) avoids that snap-back
+        // entirely. It gets reset to 0 anyway the next time a crack
+        // animation starts, right below.
         onLikeToggle();
         setCracking(false);
-        crack.setValue(0);
       });
     } else {
       onLikeToggle();
