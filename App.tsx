@@ -234,9 +234,15 @@ function AnimatedHeart({
         duration: 380,
         useNativeDriver: true,
       }).start(() => {
+        // Flip the parent's liked state FIRST, so that by the time we
+        // switch back to the plain (non-cracking) heart render below,
+        // it already picks up liked=false. Doing this in the old order
+        // (setCracking(false) before onLikeToggle()) caused a one-frame
+        // flash of a solid red heart, since the plain render briefly
+        // saw cracking=false with a still-stale liked=true.
+        onLikeToggle();
         setCracking(false);
         crack.setValue(0);
-        onLikeToggle();
       });
     } else {
       onLikeToggle();
@@ -354,6 +360,7 @@ function AppContent() {
 
   const [view, setView] = useState<ViewName>('search');
   const [tabBarHeight, setTabBarHeight] = useState(TAB_BAR_FALLBACK_HEIGHT);
+  const viewOpacity = useRef(new Animated.Value(1)).current;
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -495,6 +502,29 @@ function AppContent() {
     };
   }, [query]);
 
+  function changeView(newView: ViewName) {
+    if (newView === view) return;
+
+    if (!settings.animationsEnabled) {
+      setView(newView);
+      return;
+    }
+
+    viewOpacity.stopAnimation();
+    Animated.timing(viewOpacity, {
+      toValue: 0,
+      duration: 120,
+      useNativeDriver: true,
+    }).start(() => {
+      setView(newView);
+      Animated.timing(viewOpacity, {
+        toValue: 1,
+        duration: 150,
+        useNativeDriver: true,
+      }).start();
+    });
+  }
+
   function isLiked(url: string): boolean {
     return likedSongs.some(t => t.url === url);
   }
@@ -541,7 +571,7 @@ function AppContent() {
       if (!pl) return;
       setViewingPlaylist({ id: pl.id, name: pl.name, tracks: pl.tracks });
     }
-    setView('playlist');
+    changeView('playlist');
   }
 
   async function playAtIndex(
@@ -758,246 +788,248 @@ function AppContent() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" />
 
-      {view === 'search' && (
-        <>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Snowify</Text>
-          </View>
+      <Animated.View style={{ flex: 1, opacity: viewOpacity }}>
+        {view === 'search' && (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.headerTitle}>Snowify</Text>
+            </View>
 
-          <View style={styles.searchContainer}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="What do you want to listen to?"
-              placeholderTextColor={TEXT_DIM}
-              value={query}
-              onChangeText={setQuery}
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="What do you want to listen to?"
+                placeholderTextColor={TEXT_DIM}
+                value={query}
+                onChangeText={setQuery}
+              />
+            </View>
+
+            {searching && (
+              <ActivityIndicator style={styles.loadingIndicator} color={ACCENT} />
+            )}
+
+            {searchError && <Text style={styles.errorText}>{searchError}</Text>}
+
+            <FlatList
+              data={results}
+              keyExtractor={item => item.url}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingBottom: bottomPad },
+              ]}
+              renderItem={({ item, index }) =>
+                renderTrackRow(item, index, results)
+              }
+              ListEmptyComponent={
+                !searching && query.trim() ? (
+                  <Text style={styles.emptyText}>No results</Text>
+                ) : undefined
+              }
             />
-          </View>
+          </>
+        )}
 
-          {searching && (
-            <ActivityIndicator style={styles.loadingIndicator} color={ACCENT} />
-          )}
-
-          {searchError && <Text style={styles.errorText}>{searchError}</Text>}
-
-          <FlatList
-            data={results}
-            keyExtractor={item => item.url}
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: bottomPad },
-            ]}
-            renderItem={({ item, index }) =>
-              renderTrackRow(item, index, results)
-            }
-            ListEmptyComponent={
-              !searching && query.trim() ? (
-                <Text style={styles.emptyText}>No results</Text>
-              ) : undefined
-            }
-          />
-        </>
-      )}
-
-      {view === 'library' && (
-        <>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Your Library</Text>
-          </View>
-          <View style={styles.libraryHeaderRow}>
-            <Text style={styles.libraryHeaderLabel}>Playlists</Text>
-            <TouchableOpacity onPress={() => setNewPlaylistModalVisible(true)}>
-              <Text style={styles.libraryAddButton}>+ New</Text>
-            </TouchableOpacity>
-          </View>
-          <FlatList
-            data={playlists}
-            keyExtractor={p => p.id}
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: bottomPad },
-            ]}
-            ListHeaderComponent={
-              <TouchableOpacity
-                style={styles.playlistRow}
-                onPress={() => openPlaylistView('liked')}
-              >
-                <View style={styles.likedSongsIcon}>
-                  <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
-                </View>
-                <View style={styles.trackInfo}>
-                  <Text style={styles.trackTitle}>Liked Songs</Text>
-                  <Text style={styles.playlistSubtitle}>
-                    {likedSongs.length} songs
-                  </Text>
-                </View>
+        {view === 'library' && (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.headerTitle}>Your Library</Text>
+            </View>
+            <View style={styles.libraryHeaderRow}>
+              <Text style={styles.libraryHeaderLabel}>Playlists</Text>
+              <TouchableOpacity onPress={() => setNewPlaylistModalVisible(true)}>
+                <Text style={styles.libraryAddButton}>+ New</Text>
               </TouchableOpacity>
-            }
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.playlistRow}
-                onPress={() => openPlaylistView(item.id)}
-              >
-                <View style={styles.playlistIcon}>
-                  <Music size={20} color={ACCENT} />
-                </View>
-                <View style={styles.trackInfo}>
-                  <Text style={styles.trackTitle}>{item.name}</Text>
-                  <Text style={styles.playlistSubtitle}>
-                    {item.tracks.length} songs
-                  </Text>
-                </View>
+            </View>
+            <FlatList
+              data={playlists}
+              keyExtractor={p => p.id}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingBottom: bottomPad },
+              ]}
+              ListHeaderComponent={
+                <TouchableOpacity
+                  style={styles.playlistRow}
+                  onPress={() => openPlaylistView('liked')}
+                >
+                  <View style={styles.likedSongsIcon}>
+                    <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
+                  </View>
+                  <View style={styles.trackInfo}>
+                    <Text style={styles.trackTitle}>Liked Songs</Text>
+                    <Text style={styles.playlistSubtitle}>
+                      {likedSongs.length} songs
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.playlistRow}
+                  onPress={() => openPlaylistView(item.id)}
+                >
+                  <View style={styles.playlistIcon}>
+                    <Music size={20} color={ACCENT} />
+                  </View>
+                  <View style={styles.trackInfo}>
+                    <Text style={styles.trackTitle}>{item.name}</Text>
+                    <Text style={styles.playlistSubtitle}>
+                      {item.tracks.length} songs
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+            />
+          </>
+        )}
+
+        {view === 'playlist' && viewingPlaylist && (
+          <>
+            <View style={styles.playlistDetailHeader}>
+              <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
+                <ChevronLeft size={24} color="#FFFFFF" />
               </TouchableOpacity>
-            )}
-          />
-        </>
-      )}
+              <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+                {viewingPlaylist.name}
+              </Text>
+            </View>
+            <FlatList
+              data={viewingPlaylist.tracks}
+              keyExtractor={t => t.url}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingBottom: bottomPad },
+              ]}
+              renderItem={({ item, index }) =>
+                renderTrackRow(item, index, viewingPlaylist.tracks)
+              }
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>No songs yet</Text>
+              }
+            />
+          </>
+        )}
 
-      {view === 'playlist' && viewingPlaylist && (
-        <>
-          <View style={styles.playlistDetailHeader}>
-            <TouchableOpacity onPress={() => setView('library')} hitSlop={10}>
-              <ChevronLeft size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-            <Text style={styles.playlistDetailTitle} numberOfLines={1}>
-              {viewingPlaylist.name}
-            </Text>
-          </View>
-          <FlatList
-            data={viewingPlaylist.tracks}
-            keyExtractor={t => t.url}
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: bottomPad },
-            ]}
-            renderItem={({ item, index }) =>
-              renderTrackRow(item, index, viewingPlaylist.tracks)
-            }
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No songs yet</Text>
-            }
-          />
-        </>
-      )}
-
-      {view === 'settings' && (
-        <>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Settings</Text>
-          </View>
-          <ScrollView
-            contentContainerStyle={[
-              styles.settingsScroll,
-              { paddingBottom: bottomPad },
-            ]}
-          >
-            <SettingsSection title="Playback">
-              <SettingsRow
-                label="Autoplay"
-                description="Continue through the current queue when a track ends"
-                control={
-                  <Switch
-                    value={settings.autoplay}
-                    onValueChange={v => updateSetting('autoplay', v)}
-                    trackColor={{ true: ACCENT, false: BORDER }}
-                    thumbColor="#FFFFFF"
-                  />
-                }
-              />
-              <SettingsRow
-                label="Audio quality"
-                description="Higher quality uses more bandwidth"
-                control={
-                  <TouchableOpacity
-                    style={styles.settingsDropdown}
-                    onPress={cycleAudioQuality}
-                  >
-                    <Text style={styles.settingsDropdownText}>
-                      {AUDIO_QUALITY_LABELS[settings.audioQuality]}
-                    </Text>
-                    <ChevronDown size={14} color={TEXT_DIM} />
-                  </TouchableOpacity>
-                }
-              />
-            </SettingsSection>
-
-            <SettingsSection title="Appearance">
-              <SettingsRow
-                label="Animations"
-                description="Enable smooth transitions and animations throughout the app"
-                control={
-                  <Switch
-                    value={settings.animationsEnabled}
-                    onValueChange={v => updateSetting('animationsEnabled', v)}
-                    trackColor={{ true: ACCENT, false: BORDER }}
-                    thumbColor="#FFFFFF"
-                  />
-                }
-              />
-            </SettingsSection>
-
-            <SettingsSection title="Data">
-              <SettingsRow
-                label="Reset all data"
-                description="Delete all playlists, liked songs, and settings"
-                control={
-                  <TouchableOpacity
-                    style={styles.settingsDangerButton}
-                    onPress={handleResetAllData}
-                  >
-                    <Text style={styles.settingsDangerButtonText}>Reset</Text>
-                  </TouchableOpacity>
-                }
-              />
-            </SettingsSection>
-
-            <SettingsSection title="About">
-              <SettingsRow label="Version" description="v0.1.0" control={<View />} />
-            </SettingsSection>
-
-            <SettingsSection title="Developer">
-              <SettingsRow
-                label="Developer Mode"
-                description="Show debug logs"
-                control={
-                  <Switch
-                    value={settings.developerMode}
-                    onValueChange={v => updateSetting('developerMode', v)}
-                    trackColor={{ true: ACCENT, false: BORDER }}
-                    thumbColor="#FFFFFF"
-                  />
-                }
-              />
-            </SettingsSection>
-
-            {settings.developerMode && (
-              <SettingsSection title="Debug Logs">
-                <View style={styles.debugLogsButtonRow}>
-                  <TouchableOpacity
-                    style={styles.settingsSecondaryButton}
-                    onPress={handleCopyLogs}
-                  >
-                    <Text style={styles.settingsSecondaryButtonText}>
-                      Copy Logs
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.settingsSecondaryButton}
-                    onPress={handleClearLogs}
-                  >
-                    <Text style={styles.settingsSecondaryButtonText}>
-                      Clear
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <ScrollView style={styles.debugLogsBox} nestedScrollEnabled>
-                  <Text style={styles.debugLogsText}>{debugLogsText}</Text>
-                </ScrollView>
+        {view === 'settings' && (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.headerTitle}>Settings</Text>
+            </View>
+            <ScrollView
+              contentContainerStyle={[
+                styles.settingsScroll,
+                { paddingBottom: bottomPad },
+              ]}
+            >
+              <SettingsSection title="Playback">
+                <SettingsRow
+                  label="Autoplay"
+                  description="Continue through the current queue when a track ends"
+                  control={
+                    <Switch
+                      value={settings.autoplay}
+                      onValueChange={v => updateSetting('autoplay', v)}
+                      trackColor={{ true: ACCENT, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label="Audio quality"
+                  description="Higher quality uses more bandwidth"
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsDropdown}
+                      onPress={cycleAudioQuality}
+                    >
+                      <Text style={styles.settingsDropdownText}>
+                        {AUDIO_QUALITY_LABELS[settings.audioQuality]}
+                      </Text>
+                      <ChevronDown size={14} color={TEXT_DIM} />
+                    </TouchableOpacity>
+                  }
+                />
               </SettingsSection>
-            )}
-          </ScrollView>
-        </>
-      )}
+
+              <SettingsSection title="Appearance">
+                <SettingsRow
+                  label="Animations"
+                  description="Enable smooth transitions and animations throughout the app"
+                  control={
+                    <Switch
+                      value={settings.animationsEnabled}
+                      onValueChange={v => updateSetting('animationsEnabled', v)}
+                      trackColor={{ true: ACCENT, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+              </SettingsSection>
+
+              <SettingsSection title="Data">
+                <SettingsRow
+                  label="Reset all data"
+                  description="Delete all playlists, liked songs, and settings"
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsDangerButton}
+                      onPress={handleResetAllData}
+                    >
+                      <Text style={styles.settingsDangerButtonText}>Reset</Text>
+                    </TouchableOpacity>
+                  }
+                />
+              </SettingsSection>
+
+              <SettingsSection title="About">
+                <SettingsRow label="Version" description="v0.1.0" control={<View />} />
+              </SettingsSection>
+
+              <SettingsSection title="Developer">
+                <SettingsRow
+                  label="Developer Mode"
+                  description="Show debug logs"
+                  control={
+                    <Switch
+                      value={settings.developerMode}
+                      onValueChange={v => updateSetting('developerMode', v)}
+                      trackColor={{ true: ACCENT, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+              </SettingsSection>
+
+              {settings.developerMode && (
+                <SettingsSection title="Debug Logs">
+                  <View style={styles.debugLogsButtonRow}>
+                    <TouchableOpacity
+                      style={styles.settingsSecondaryButton}
+                      onPress={handleCopyLogs}
+                    >
+                      <Text style={styles.settingsSecondaryButtonText}>
+                        Copy Logs
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.settingsSecondaryButton}
+                      onPress={handleClearLogs}
+                    >
+                      <Text style={styles.settingsSecondaryButtonText}>
+                        Clear
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView style={styles.debugLogsBox} nestedScrollEnabled>
+                    <Text style={styles.debugLogsText}>{debugLogsText}</Text>
+                  </ScrollView>
+                </SettingsSection>
+              )}
+            </ScrollView>
+          </>
+        )}
+      </Animated.View>
 
       {nowPlaying && (
         <View
@@ -1092,7 +1124,7 @@ function AppContent() {
         onLayout={e => setTabBarHeight(e.nativeEvent.layout.height)}
       >
         <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
-          <TouchableOpacity style={styles.tabButton} onPress={() => setView('search')}>
+          <TouchableOpacity style={styles.tabButton} onPress={() => changeView('search')}>
             <Search size={20} color={view === 'search' ? ACCENT : TEXT_DIM} />
             <Text
               style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
@@ -1102,7 +1134,7 @@ function AppContent() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.tabButton}
-            onPress={() => setView('library')}
+            onPress={() => changeView('library')}
           >
             <Library
               size={20}
@@ -1122,7 +1154,7 @@ function AppContent() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.tabButton}
-            onPress={() => setView('settings')}
+            onPress={() => changeView('settings')}
           >
             <SettingsIcon
               size={20}
