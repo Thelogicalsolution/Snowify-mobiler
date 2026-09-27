@@ -49,6 +49,7 @@ import {
   Repeat1,
   Volume2,
   Settings as SettingsIcon,
+  Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
 import {
@@ -69,6 +70,12 @@ import {
   resetAllData,
 } from './SettingsStore';
 import { logDebug, getDebugLogs, clearDebugLogs } from './DebugLog';
+import {
+  DownloadedTrack,
+  loadDownloads,
+  saveDownloads,
+} from './DownloadStore';
+import { downloadTrackAudio, deleteDownloadedFile } from './DownloadManager';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -107,6 +114,10 @@ function formatTime(seconds: number): string {
     .toString()
     .padStart(2, '0');
   return `${m}:${s}`;
+}
+
+function toPlayableUrl(path: string): string {
+  return path.startsWith('file://') ? path : `file://${path}`;
 }
 
 function shuffledOrder(length: number, frontIndex: number): number[] {
@@ -234,17 +245,6 @@ function AnimatedHeart({
         duration: 380,
         useNativeDriver: true,
       }).start(() => {
-        // Flip the parent's liked state first, then unmount the crack
-        // halves. Deliberately NOT resetting crack back to 0 here: since
-        // useNativeDriver bypasses React's commit timing, an imperative
-        // setValue(0) lands on the native side instantly - faster than
-        // setCracking(false) can actually remove the halves from the
-        // tree - which briefly snaps both halves back to fully
-        // overlapping + opaque (i.e. looking like one solid red heart)
-        // for a frame before they're unmounted. Leaving crack at its
-        // finished value (1, fully invisible) avoids that snap-back
-        // entirely. It gets reset to 0 anyway the next time a crack
-        // animation starts, right below.
         onLikeToggle();
         setCracking(false);
       });
@@ -400,6 +400,12 @@ function AppContent() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [debugLogsText, setDebugLogsText] = useState('');
 
+  const [downloads, setDownloads] = useState<DownloadedTrack[]>([]);
+  const [downloadsLoaded, setDownloadsLoaded] = useState(false);
+  const [downloadingUrls, setDownloadingUrls] = useState<Set<string>>(
+    new Set(),
+  );
+
   const playing = useIsPlaying();
   const progress = useProgress(0.5);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -414,16 +420,19 @@ function AppContent() {
 
   useEffect(() => {
     (async () => {
-      const [liked, pls, loadedSettings] = await Promise.all([
+      const [liked, pls, loadedSettings, loadedDownloads] = await Promise.all([
         loadLikedSongs(),
         loadPlaylists(),
         loadSettings(),
+        loadDownloads(),
       ]);
       setLikedSongs(liked);
       setPlaylists(pls);
       setSettings(loadedSettings);
+      setDownloads(loadedDownloads);
       setStoreLoaded(true);
       setSettingsLoaded(true);
+      setDownloadsLoaded(true);
     })();
   }, []);
 
@@ -441,6 +450,11 @@ function AppContent() {
     if (!settingsLoaded) return;
     saveSettings(settings);
   }, [settings, settingsLoaded]);
+
+  useEffect(() => {
+    if (!downloadsLoaded) return;
+    saveDownloads(downloads);
+  }, [downloads, downloadsLoaded]);
 
   useEffect(() => {
     if (!playerSetupDone) return;
@@ -541,6 +555,58 @@ function AppContent() {
     );
   }
 
+  function isDownloaded(url: string): boolean {
+    return downloads.some(d => d.url === url);
+  }
+
+  function getDownloadedTrack(url: string): DownloadedTrack | undefined {
+    return downloads.find(d => d.url === url);
+  }
+
+  async function handleDownloadTrack(item: Track) {
+    if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
+
+    setDownloadingUrls(prev => {
+      const next = new Set(prev);
+      next.add(item.url);
+      return next;
+    });
+
+    try {
+      const stream = await getStreamUrl(item.url);
+      const localPath = await downloadTrackAudio(stream.streamUrl, item.url);
+
+      const entry: DownloadedTrack = {
+        url: item.url,
+        name: stream.title || item.name,
+        thumbnailUrl: stream.thumbnailUrl || item.thumbnailUrl,
+        localPath,
+      };
+
+      setDownloads(prev => [...prev.filter(d => d.url !== item.url), entry]);
+      logDebug(`Downloaded: ${item.name}`);
+    } catch (e: any) {
+      const msg = e?.message ?? 'Download failed';
+      setSearchError(msg);
+      logDebug(`Download failed for "${item.name}": ${msg}`);
+    } finally {
+      setDownloadingUrls(prev => {
+        const next = new Set(prev);
+        next.delete(item.url);
+        return next;
+      });
+    }
+  }
+
+  async function handleRemoveDownload(url: string) {
+    const entry = getDownloadedTrack(url);
+    if (entry) {
+      await deleteDownloadedFile(entry.localPath);
+    }
+    setDownloads(prev => prev.filter(d => d.url !== url));
+    logDebug(`Removed download: ${url}`);
+  }
+
   function addTrackToPlaylist(playlistId: string, track: Track) {
     setPlaylists(prev =>
       prev.map(p =>
@@ -567,9 +633,19 @@ function AppContent() {
     setNewPlaylistName('');
   }
 
-  function openPlaylistView(id: 'liked' | string) {
+  function openPlaylistView(id: 'liked' | 'downloaded' | string) {
     if (id === 'liked') {
       setViewingPlaylist({ id: 'liked', name: 'Liked Songs', tracks: likedSongs });
+    } else if (id === 'downloaded') {
+      setViewingPlaylist({
+        id: 'downloaded',
+        name: 'Downloaded',
+        tracks: downloads.map(d => ({
+          url: d.url,
+          name: d.name,
+          thumbnailUrl: d.thumbnailUrl,
+        })),
+      });
     } else {
       const pl = playlists.find(p => p.id === id);
       if (!pl) return;
@@ -588,14 +664,30 @@ function AppContent() {
 
     setLoadingTrack(item.url);
     try {
-      const stream = await getStreamUrl(item.url);
+      const downloaded = getDownloadedTrack(item.url);
+
+      let streamUrl: string;
+      let title: string;
+      let thumbnailUrl: string | undefined;
+
+      if (downloaded) {
+        streamUrl = toPlayableUrl(downloaded.localPath);
+        title = downloaded.name;
+        thumbnailUrl = downloaded.thumbnailUrl;
+        logDebug(`Playing offline: ${title}`);
+      } else {
+        const stream = await getStreamUrl(item.url);
+        streamUrl = stream.streamUrl;
+        title = stream.title || item.name;
+        thumbnailUrl = stream.thumbnailUrl || item.thumbnailUrl;
+      }
 
       await TrackPlayer.setMediaItems([
         {
-          url: stream.streamUrl,
-          title: stream.title || item.name,
+          url: streamUrl,
+          title,
           artist: 'YouTube',
-          artworkUrl: stream.thumbnailUrl || item.thumbnailUrl,
+          artworkUrl: thumbnailUrl,
         },
       ]);
       await TrackPlayer.play();
@@ -603,7 +695,9 @@ function AppContent() {
       setQueue(list);
       setQueueIndex(index);
       setNowPlaying(item);
-      logDebug(`Playing: ${item.name}`);
+      if (!downloaded) {
+        logDebug(`Playing: ${item.name}`);
+      }
 
       if (isNewQueue) {
         const order = shuffledOrder(list.length, index);
@@ -717,16 +811,20 @@ function AppContent() {
   function handleResetAllData() {
     Alert.alert(
       'Reset all data',
-      'This will delete all playlists, liked songs, and settings. This cannot be undone.',
+      'This will delete all playlists, liked songs, downloads, and settings. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Reset',
           style: 'destructive',
           onPress: async () => {
+            await Promise.all(
+              downloads.map(d => deleteDownloadedFile(d.localPath)),
+            );
             await resetAllData();
             setLikedSongs([]);
             setPlaylists([]);
+            setDownloads([]);
             setSettings(DEFAULT_SETTINGS);
             logDebug('All data reset by user');
           },
@@ -778,7 +876,10 @@ function AppContent() {
               hitSlop={10}
               onPress={() => setAddToPlaylistTarget(item)}
             >
-              <MoreVertical size={18} color={TEXT_DIM} />
+              <MoreVertical
+                size={18}
+                color={isDownloaded(item.url) ? ACCENT : TEXT_DIM}
+              />
             </TouchableOpacity>
           </View>
         )}
@@ -853,20 +954,36 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
               ListHeaderComponent={
-                <TouchableOpacity
-                  style={styles.playlistRow}
-                  onPress={() => openPlaylistView('liked')}
-                >
-                  <View style={styles.likedSongsIcon}>
-                    <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
-                  </View>
-                  <View style={styles.trackInfo}>
-                    <Text style={styles.trackTitle}>Liked Songs</Text>
-                    <Text style={styles.playlistSubtitle}>
-                      {likedSongs.length} songs
-                    </Text>
-                  </View>
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    style={styles.playlistRow}
+                    onPress={() => openPlaylistView('liked')}
+                  >
+                    <View style={styles.likedSongsIcon}>
+                      <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>Liked Songs</Text>
+                      <Text style={styles.playlistSubtitle}>
+                        {likedSongs.length} songs
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.playlistRow}
+                    onPress={() => openPlaylistView('downloaded')}
+                  >
+                    <View style={styles.downloadedIcon}>
+                      <Download size={20} color="#FFFFFF" />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>Downloaded</Text>
+                      <Text style={styles.playlistSubtitle}>
+                        {downloads.length} songs
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                </>
               }
               renderItem={({ item }) => (
                 <TouchableOpacity
@@ -974,7 +1091,7 @@ function AppContent() {
               <SettingsSection title="Data">
                 <SettingsRow
                   label="Reset all data"
-                  description="Delete all playlists, liked songs, and settings"
+                  description="Delete all playlists, liked songs, downloads, and settings"
                   control={
                     <TouchableOpacity
                       style={styles.settingsDangerButton}
@@ -1184,7 +1301,46 @@ function AppContent() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Add to playlist</Text>
+            <Text style={styles.modalTitle}>Track options</Text>
+
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (!addToPlaylistTarget) return;
+                if (isDownloaded(addToPlaylistTarget.url)) {
+                  handleRemoveDownload(addToPlaylistTarget.url);
+                } else {
+                  handleDownloadTrack(addToPlaylistTarget);
+                }
+              }}
+              disabled={
+                !!addToPlaylistTarget &&
+                downloadingUrls.has(addToPlaylistTarget.url)
+              }
+            >
+              {addToPlaylistTarget &&
+              downloadingUrls.has(addToPlaylistTarget.url) ? (
+                <ActivityIndicator size="small" color={ACCENT} />
+              ) : (
+                <Download
+                  size={18}
+                  color={
+                    addToPlaylistTarget && isDownloaded(addToPlaylistTarget.url)
+                      ? ACCENT
+                      : '#FFFFFF'
+                  }
+                />
+              )}
+              <Text style={styles.modalActionText}>
+                {addToPlaylistTarget && downloadingUrls.has(addToPlaylistTarget.url)
+                  ? 'Downloading...'
+                  : addToPlaylistTarget && isDownloaded(addToPlaylistTarget.url)
+                  ? 'Remove download'
+                  : 'Download for offline'}
+              </Text>
+            </TouchableOpacity>
+
+            <Text style={styles.modalSubheading}>Add to playlist</Text>
             <ScrollView style={styles.modalScroll}>
               {playlists.length === 0 && (
                 <Text style={styles.modalEmptyText}>No playlists yet</Text>
@@ -1330,6 +1486,15 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 6,
     backgroundColor: LIKE_RED,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  downloadedIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: ACCENT,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1525,6 +1690,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     marginBottom: 12,
+  },
+  modalActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  modalActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
+  modalSubheading: {
+    color: TEXT_DIM,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 14,
+    marginBottom: 4,
   },
   modalScroll: { maxHeight: 220 },
   modalEmptyText: { color: TEXT_DIM, fontSize: 13, paddingVertical: 8 },

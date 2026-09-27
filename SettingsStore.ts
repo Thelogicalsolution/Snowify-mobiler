@@ -42,6 +42,7 @@ export async function resetAllData(): Promise<void> {
     await AsyncStorage.multiRemove([
       'snowify_liked_songs',
       'snowify_playlists',
+      'snowify_downloads',
       SETTINGS_KEY,
     ]);
   } catch {

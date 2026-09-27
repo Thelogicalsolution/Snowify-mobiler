@@ -19,6 +19,7 @@
     "lucide-react-native": "^1.48.0",
     "react": "19.2.3",
     "react-native": "0.87.1",
+    "react-native-blob-util": "^0.25.1",
     "react-native-safe-area-context": "^5.9.1",
     "react-native-screens": "^4.28.0",
     "react-native-svg": "^15.15.5"
