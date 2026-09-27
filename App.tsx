@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   FlatList,
   Image,
@@ -13,6 +14,7 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -23,12 +25,31 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
+import Clipboard from '@react-native-clipboard/clipboard';
 import TrackPlayer, {
   Event,
   RepeatMode,
   useIsPlaying,
   useProgress,
 } from '@rntp/player';
+import {
+  Heart,
+  MoreVertical,
+  Music,
+  Search,
+  Library,
+  ChevronLeft,
+  ChevronDown,
+  Shuffle,
+  SkipBack,
+  SkipForward,
+  Play,
+  Pause,
+  Repeat,
+  Repeat1,
+  Volume2,
+  Settings as SettingsIcon,
+} from 'lucide-react-native';
 import { searchVideos, getStreamUrl } from './NewPipeBridge';
 import {
   Track,
@@ -39,10 +60,19 @@ import {
   savePlaylists,
   makePlaylistId,
 } from './PlaylistStore';
+import {
+  AppSettings,
+  AudioQuality,
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  resetAllData,
+} from './SettingsStore';
+import { logDebug, getDebugLogs, clearDebugLogs } from './DebugLog';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
-type ViewName = 'search' | 'library' | 'playlist';
+type ViewName = 'search' | 'library' | 'playlist' | 'settings';
 
 const ACCENT = '#A855F7';
 const LIKE_RED = '#FF3B5C';
@@ -51,6 +81,12 @@ const CARD = '#17171D';
 const BORDER = '#252530';
 const TEXT_DIM = '#8A8A9A';
 const TAB_BAR_FALLBACK_HEIGHT = 70;
+
+const AUDIO_QUALITY_LABELS: Record<AudioQuality, string> = {
+  best: 'Best',
+  balanced: 'Balanced',
+  low: 'Low',
+};
 
 let playerSetupDone = false;
 
@@ -173,16 +209,23 @@ function AnimatedHeart({
   liked,
   onLikeToggle,
   size = 18,
+  animationsEnabled = true,
 }: {
   liked: boolean;
   onLikeToggle: () => void;
   size?: number;
+  animationsEnabled?: boolean;
 }) {
   const crack = useRef(new Animated.Value(0)).current;
   const pop = useRef(new Animated.Value(1)).current;
   const [cracking, setCracking] = useState(false);
 
   function handlePress() {
+    if (!animationsEnabled) {
+      onLikeToggle();
+      return;
+    }
+
     if (liked) {
       setCracking(true);
       crack.setValue(0);
@@ -242,9 +285,7 @@ function AnimatedHeart({
               leftStyle,
             ]}
           >
-            <Text style={[styles.heartGlyph, { fontSize: size, width: size, color: LIKE_RED }]}>
-              ♥
-            </Text>
+            <Heart size={size} color={LIKE_RED} fill={LIKE_RED} />
           </Animated.View>
           <Animated.View
             style={[
@@ -253,33 +294,58 @@ function AnimatedHeart({
               rightStyle,
             ]}
           >
-            <Text
-              style={[
-                styles.heartGlyph,
-                {
-                  fontSize: size,
-                  width: size,
-                  marginLeft: -size / 2,
-                  color: LIKE_RED,
-                },
-              ]}
-            >
-              ♥
-            </Text>
+            <View style={{ marginLeft: -size / 2 }}>
+              <Heart size={size} color={LIKE_RED} fill={LIKE_RED} />
+            </View>
           </Animated.View>
         </View>
       ) : (
-        <Animated.Text
-          style={[
-            styles.heartIcon,
-            { fontSize: size, transform: [{ scale: pop }] },
-            liked && styles.heartIconActive,
-          ]}
-        >
-          {liked ? '♥' : '♡'}
-        </Animated.Text>
+        <Animated.View style={{ transform: [{ scale: pop }] }}>
+          <Heart
+            size={size}
+            color={liked ? LIKE_RED : TEXT_DIM}
+            fill={liked ? LIKE_RED : 'none'}
+          />
+        </Animated.View>
       )}
     </TouchableOpacity>
+  );
+}
+
+function SettingsRow({
+  label,
+  description,
+  control,
+}: {
+  label: string;
+  description?: string;
+  control: React.ReactNode;
+}) {
+  return (
+    <View style={styles.settingsRow}>
+      <View style={styles.settingsRowText}>
+        <Text style={styles.settingsRowLabel}>{label}</Text>
+        {description ? (
+          <Text style={styles.settingsRowDescription}>{description}</Text>
+        ) : null}
+      </View>
+      {control}
+    </View>
+  );
+}
+
+function SettingsSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.settingsSection}>
+      <Text style={styles.settingsSectionTitle}>{title}</Text>
+      {children}
+    </View>
   );
 }
 
@@ -319,25 +385,34 @@ function AppContent() {
     useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
 
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [debugLogsText, setDebugLogsText] = useState('');
+
   const playing = useIsPlaying();
   const progress = useProgress(0.5);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setupPlayer().catch(error => {
-      setSearchError(error?.message ?? 'Audio player failed to initialize');
+      const msg = error?.message ?? 'Audio player failed to initialize';
+      setSearchError(msg);
+      logDebug(`Player init failed: ${msg}`);
     });
   }, []);
 
   useEffect(() => {
     (async () => {
-      const [liked, pls] = await Promise.all([
+      const [liked, pls, loadedSettings] = await Promise.all([
         loadLikedSongs(),
         loadPlaylists(),
+        loadSettings(),
       ]);
       setLikedSongs(liked);
       setPlaylists(pls);
+      setSettings(loadedSettings);
       setStoreLoaded(true);
+      setSettingsLoaded(true);
     })();
   }, []);
 
@@ -352,6 +427,11 @@ function AppContent() {
   }, [playlists, storeLoaded]);
 
   useEffect(() => {
+    if (!settingsLoaded) return;
+    saveSettings(settings);
+  }, [settings, settingsLoaded]);
+
+  useEffect(() => {
     if (!playerSetupDone) return;
     TrackPlayer.setVolume(volume);
   }, [volume]);
@@ -363,17 +443,23 @@ function AppContent() {
     );
   }, [repeatMode]);
 
+  useEffect(() => {
+    if (view === 'settings' && settings.developerMode) {
+      setDebugLogsText(getDebugLogs());
+    }
+  }, [view, settings.developerMode]);
+
   const goNextRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
-      if (repeatMode === 'all') {
+      if (repeatMode === 'all' || (repeatMode === 'off' && settings.autoplay)) {
         goNextRef.current();
       }
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repeatMode]);
+  }, [repeatMode, settings.autoplay]);
 
   useEffect(() => {
     if (debounceRef.current) {
@@ -393,8 +479,10 @@ function AppContent() {
         const found = await searchVideos(query);
         setResults(found);
       } catch (e: any) {
-        setSearchError(e?.message ?? 'Search failed');
+        const msg = e?.message ?? 'Search failed';
+        setSearchError(msg);
         setResults([]);
+        logDebug(`Search failed for "${query}": ${msg}`);
       } finally {
         setSearching(false);
       }
@@ -481,6 +569,7 @@ function AppContent() {
       setQueue(list);
       setQueueIndex(index);
       setNowPlaying(item);
+      logDebug(`Playing: ${item.name}`);
 
       if (isNewQueue) {
         const order = shuffledOrder(list.length, index);
@@ -491,7 +580,9 @@ function AppContent() {
         if (pos >= 0) setShufflePos(pos);
       }
     } catch (e: any) {
-      setSearchError(e?.message ?? 'Could not play this track');
+      const msg = e?.message ?? 'Could not play this track';
+      setSearchError(msg);
+      logDebug(`Playback failed for "${item.name}": ${msg}`);
     } finally {
       setLoadingTrack(null);
     }
@@ -576,6 +667,51 @@ function AppContent() {
     }
   }
 
+  function updateSetting<K extends keyof AppSettings>(
+    key: K,
+    value: AppSettings[K],
+  ) {
+    setSettings(prev => ({ ...prev, [key]: value }));
+  }
+
+  function cycleAudioQuality() {
+    const order: AudioQuality[] = ['best', 'balanced', 'low'];
+    const idx = order.indexOf(settings.audioQuality);
+    updateSetting('audioQuality', order[(idx + 1) % order.length]);
+  }
+
+  function handleResetAllData() {
+    Alert.alert(
+      'Reset all data',
+      'This will delete all playlists, liked songs, and settings. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            await resetAllData();
+            setLikedSongs([]);
+            setPlaylists([]);
+            setSettings(DEFAULT_SETTINGS);
+            logDebug('All data reset by user');
+          },
+        },
+      ],
+    );
+  }
+
+  function handleCopyLogs() {
+    const text = getDebugLogs();
+    Clipboard.setString(text);
+    Alert.alert('Copied', 'Debug logs copied to clipboard.');
+  }
+
+  function handleClearLogs() {
+    clearDebugLogs();
+    setDebugLogsText(getDebugLogs());
+  }
+
   function renderTrackRow(item: SearchResult, index: number, list: SearchResult[]) {
     return (
       <TouchableOpacity
@@ -602,12 +738,13 @@ function AppContent() {
             <AnimatedHeart
               liked={isLiked(item.url)}
               onLikeToggle={() => toggleLike(item)}
+              animationsEnabled={settings.animationsEnabled}
             />
             <TouchableOpacity
               hitSlop={10}
               onPress={() => setAddToPlaylistTarget(item)}
             >
-              <Text style={styles.dotsIcon}>⋮</Text>
+              <MoreVertical size={18} color={TEXT_DIM} />
             </TouchableOpacity>
           </View>
         )}
@@ -686,7 +823,7 @@ function AppContent() {
                 onPress={() => openPlaylistView('liked')}
               >
                 <View style={styles.likedSongsIcon}>
-                  <Text style={styles.likedSongsIconText}>♥</Text>
+                  <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
                 </View>
                 <View style={styles.trackInfo}>
                   <Text style={styles.trackTitle}>Liked Songs</Text>
@@ -702,7 +839,7 @@ function AppContent() {
                 onPress={() => openPlaylistView(item.id)}
               >
                 <View style={styles.playlistIcon}>
-                  <Text style={styles.playlistIconText}>🎵</Text>
+                  <Music size={20} color={ACCENT} />
                 </View>
                 <View style={styles.trackInfo}>
                   <Text style={styles.trackTitle}>{item.name}</Text>
@@ -720,7 +857,7 @@ function AppContent() {
         <>
           <View style={styles.playlistDetailHeader}>
             <TouchableOpacity onPress={() => setView('library')} hitSlop={10}>
-              <Text style={styles.backArrow}>←</Text>
+              <ChevronLeft size={24} color="#FFFFFF" />
             </TouchableOpacity>
             <Text style={styles.playlistDetailTitle} numberOfLines={1}>
               {viewingPlaylist.name}
@@ -740,6 +877,125 @@ function AppContent() {
               <Text style={styles.emptyText}>No songs yet</Text>
             }
           />
+        </>
+      )}
+
+      {view === 'settings' && (
+        <>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Settings</Text>
+          </View>
+          <ScrollView
+            contentContainerStyle={[
+              styles.settingsScroll,
+              { paddingBottom: bottomPad },
+            ]}
+          >
+            <SettingsSection title="Playback">
+              <SettingsRow
+                label="Autoplay"
+                description="Continue through the current queue when a track ends"
+                control={
+                  <Switch
+                    value={settings.autoplay}
+                    onValueChange={v => updateSetting('autoplay', v)}
+                    trackColor={{ true: ACCENT, false: BORDER }}
+                    thumbColor="#FFFFFF"
+                  />
+                }
+              />
+              <SettingsRow
+                label="Audio quality"
+                description="Higher quality uses more bandwidth"
+                control={
+                  <TouchableOpacity
+                    style={styles.settingsDropdown}
+                    onPress={cycleAudioQuality}
+                  >
+                    <Text style={styles.settingsDropdownText}>
+                      {AUDIO_QUALITY_LABELS[settings.audioQuality]}
+                    </Text>
+                    <ChevronDown size={14} color={TEXT_DIM} />
+                  </TouchableOpacity>
+                }
+              />
+            </SettingsSection>
+
+            <SettingsSection title="Appearance">
+              <SettingsRow
+                label="Animations"
+                description="Enable smooth transitions and animations throughout the app"
+                control={
+                  <Switch
+                    value={settings.animationsEnabled}
+                    onValueChange={v => updateSetting('animationsEnabled', v)}
+                    trackColor={{ true: ACCENT, false: BORDER }}
+                    thumbColor="#FFFFFF"
+                  />
+                }
+              />
+            </SettingsSection>
+
+            <SettingsSection title="Data">
+              <SettingsRow
+                label="Reset all data"
+                description="Delete all playlists, liked songs, and settings"
+                control={
+                  <TouchableOpacity
+                    style={styles.settingsDangerButton}
+                    onPress={handleResetAllData}
+                  >
+                    <Text style={styles.settingsDangerButtonText}>Reset</Text>
+                  </TouchableOpacity>
+                }
+              />
+            </SettingsSection>
+
+            <SettingsSection title="About">
+              <SettingsRow label="Version" description="v0.1.0" control={<View />} />
+            </SettingsSection>
+
+            <SettingsSection title="Developer">
+              <SettingsRow
+                label="Developer Mode"
+                description="Show debug logs"
+                control={
+                  <Switch
+                    value={settings.developerMode}
+                    onValueChange={v => updateSetting('developerMode', v)}
+                    trackColor={{ true: ACCENT, false: BORDER }}
+                    thumbColor="#FFFFFF"
+                  />
+                }
+              />
+            </SettingsSection>
+
+            {settings.developerMode && (
+              <SettingsSection title="Debug Logs">
+                <View style={styles.debugLogsButtonRow}>
+                  <TouchableOpacity
+                    style={styles.settingsSecondaryButton}
+                    onPress={handleCopyLogs}
+                  >
+                    <Text style={styles.settingsSecondaryButtonText}>
+                      Copy Logs
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.settingsSecondaryButton}
+                    onPress={handleClearLogs}
+                  >
+                    <Text style={styles.settingsSecondaryButtonText}>
+                      Clear
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView style={styles.debugLogsBox} nestedScrollEnabled>
+                  <Text style={styles.debugLogsText}>{debugLogsText}</Text>
+                </ScrollView>
+              </SettingsSection>
+            )}
+          </ScrollView>
         </>
       )}
 
@@ -788,52 +1044,42 @@ function AppContent() {
             <AnimatedHeart
               liked={isLiked(nowPlaying.url)}
               onLikeToggle={() => toggleLike(nowPlaying)}
+              animationsEnabled={settings.animationsEnabled}
             />
           </View>
 
           <View style={styles.transportRow}>
             <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
-              <Text
-                style={[
-                  styles.transportIconSmall,
-                  shuffleOn && styles.transportIconActive,
-                ]}
-              >
-                ⤨
-              </Text>
+              <Shuffle size={18} color={shuffleOn ? ACCENT : '#FFFFFF'} />
             </TouchableOpacity>
 
             <TouchableOpacity hitSlop={10} onPress={goPrevious}>
-              <Text style={styles.transportIconSmall}>⏮</Text>
+              <SkipBack size={20} color="#FFFFFF" fill="#FFFFFF" />
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
-              <Text style={styles.playButtonText}>{playing ? '⏸' : '▶'}</Text>
+              {playing ? (
+                <Pause size={20} color={BG} fill={BG} />
+              ) : (
+                <Play size={20} color={BG} fill={BG} />
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity hitSlop={10} onPress={goNext}>
-              <Text style={styles.transportIconSmall}>⏭</Text>
+              <SkipForward size={20} color="#FFFFFF" fill="#FFFFFF" />
             </TouchableOpacity>
 
             <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
-              <View>
-                <Text
-                  style={[
-                    styles.transportIconSmall,
-                    repeatMode !== 'off' && styles.transportIconActive,
-                  ]}
-                >
-                  ⟳
-                </Text>
-                {repeatMode === 'one' && (
-                  <Text style={styles.repeatOneBadge}>1</Text>
-                )}
-              </View>
+              {repeatMode === 'one' ? (
+                <Repeat1 size={18} color={ACCENT} />
+              ) : (
+                <Repeat size={18} color={repeatMode === 'all' ? ACCENT : '#FFFFFF'} />
+              )}
             </TouchableOpacity>
           </View>
 
           <View style={styles.volumeRow}>
-            <Text style={styles.volumeIcon}>🔊</Text>
+            <Volume2 size={14} color={TEXT_DIM} />
             <View style={styles.volumeBarWrapper}>
               <DraggableBar value={volume} onChange={setVolume} height={3} />
             </View>
@@ -847,9 +1093,7 @@ function AppContent() {
       >
         <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
           <TouchableOpacity style={styles.tabButton} onPress={() => setView('search')}>
-            <Text style={[styles.tabIcon, view === 'search' && styles.tabIconActive]}>
-              🔍
-            </Text>
+            <Search size={20} color={view === 'search' ? ACCENT : TEXT_DIM} />
             <Text
               style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
             >
@@ -860,15 +1104,12 @@ function AppContent() {
             style={styles.tabButton}
             onPress={() => setView('library')}
           >
-            <Text
-              style={[
-                styles.tabIcon,
-                (view === 'library' || view === 'playlist') &&
-                  styles.tabIconActive,
-              ]}
-            >
-              📚
-            </Text>
+            <Library
+              size={20}
+              color={
+                view === 'library' || view === 'playlist' ? ACCENT : TEXT_DIM
+              }
+            />
             <Text
               style={[
                 styles.tabLabel,
@@ -877,6 +1118,23 @@ function AppContent() {
               ]}
             >
               Library
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.tabButton}
+            onPress={() => setView('settings')}
+          >
+            <SettingsIcon
+              size={20}
+              color={view === 'settings' ? ACCENT : TEXT_DIM}
+            />
+            <Text
+              style={[
+                styles.tabLabel,
+                view === 'settings' && styles.tabLabelActive,
+              ]}
+            >
+              Settings
             </Text>
           </TouchableOpacity>
         </View>
@@ -1013,12 +1271,8 @@ const styles = StyleSheet.create({
   trackTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   emptyText: { color: TEXT_DIM, textAlign: 'center', marginTop: 40 },
   rowActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  heartIcon: { color: TEXT_DIM, fontSize: 18, paddingHorizontal: 4 },
-  heartIconActive: { color: LIKE_RED },
   heartHalfLeft: { position: 'absolute', left: 0, top: 0, overflow: 'hidden' },
   heartHalfRight: { position: 'absolute', top: 0, overflow: 'hidden' },
-  heartGlyph: { textAlign: 'left' },
-  dotsIcon: { color: TEXT_DIM, fontSize: 18, paddingHorizontal: 4 },
   libraryHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1044,7 +1298,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-  likedSongsIconText: { color: '#FFFFFF', fontSize: 18 },
   playlistIcon: {
     width: 44,
     height: 44,
@@ -1054,7 +1307,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-  playlistIconText: { fontSize: 18 },
   playlistSubtitle: { color: TEXT_DIM, fontSize: 12, marginTop: 2 },
   playlistDetailHeader: {
     flexDirection: 'row',
@@ -1064,8 +1316,70 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 12,
   },
-  backArrow: { color: '#FFFFFF', fontSize: 20 },
   playlistDetailTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '700', flex: 1 },
+  settingsScroll: { paddingHorizontal: 20 },
+  settingsSection: {
+    backgroundColor: CARD,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  settingsSectionTitle: {
+    color: ACCENT,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+    gap: 12,
+  },
+  settingsRowText: { flex: 1 },
+  settingsRowLabel: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
+  settingsRowDescription: { color: TEXT_DIM, fontSize: 12, marginTop: 2 },
+  settingsDropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: BG,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+  },
+  settingsDropdownText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  settingsDangerButton: {
+    borderWidth: 1,
+    borderColor: LIKE_RED,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  settingsDangerButtonText: { color: LIKE_RED, fontSize: 13, fontWeight: '700' },
+  settingsSecondaryButton: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  settingsSecondaryButtonText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  debugLogsButtonRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+  debugLogsBox: {
+    maxHeight: 200,
+    backgroundColor: BG,
+    borderRadius: 8,
+    padding: 10,
+  },
+  debugLogsText: { color: TEXT_DIM, fontSize: 11, fontFamily: 'monospace' },
   miniPlayer: {
     position: 'absolute',
     left: 0,
@@ -1120,16 +1434,6 @@ const styles = StyleSheet.create({
     gap: 28,
     paddingVertical: 4,
   },
-  transportIconSmall: { color: '#FFFFFF', fontSize: 18 },
-  transportIconActive: { color: ACCENT },
-  repeatOneBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -8,
-    color: ACCENT,
-    fontSize: 9,
-    fontWeight: '700',
-  },
   playButton: {
     width: 44,
     height: 44,
@@ -1138,7 +1442,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  playButtonText: { color: '#0B0B0F', fontSize: 16 },
   volumeRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1147,7 +1450,6 @@ const styles = StyleSheet.create({
     gap: 8,
     marginHorizontal: 28,
   },
-  volumeIcon: { fontSize: 12 },
   volumeBarWrapper: { flex: 1 },
   tabBar: {
     position: 'absolute',
@@ -1168,8 +1470,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 4,
   },
-  tabIcon: { fontSize: 18, opacity: 0.5 },
-  tabIconActive: { opacity: 1 },
   tabLabel: { color: TEXT_DIM, fontSize: 10, marginTop: 2 },
   tabLabelActive: { color: ACCENT, fontWeight: '700' },
   modalOverlay: {
