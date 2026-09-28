@@ -72,23 +72,41 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // Picks an audio stream by bitrate tier.
+    // "best" = highest bitrate, "low" = lowest bitrate, "balanced" = middle.
+    // Streams with an unknown bitrate (-1) are ignored unless none report one.
+    private fun pickAudioStream(streams: List<AudioStream>, quality: String): AudioStream? {
+        if (streams.isEmpty()) {
+            return null
+        }
+
+        val withBitrate = streams.filter { it.averageBitrate > 0 }
+        val candidates = if (withBitrate.isNotEmpty()) withBitrate else streams
+        val sorted = candidates.sortedBy { it.averageBitrate }
+
+        return when (quality) {
+            "low" -> sorted.first()
+            "balanced" -> sorted[(sorted.size - 1) / 2]
+            else -> sorted.last()
+        }
+    }
+
     @ReactMethod
-    fun getStreamUrl(videoUrl: String, promise: Promise) {
+    fun getStreamUrl(videoUrl: String, quality: String, promise: Promise) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val youtubeService = ServiceList.YouTube
                 val streamInfo = StreamInfo.getInfo(youtubeService, videoUrl)
 
-                val bestAudio: AudioStream? = streamInfo.audioStreams
-                    .maxByOrNull { it.averageBitrate }
+                val chosenAudio: AudioStream? = pickAudioStream(streamInfo.audioStreams, quality)
 
-                if (bestAudio == null) {
+                if (chosenAudio == null) {
                     promise.reject("NO_AUDIO_STREAM", "No audio stream found for this video")
                     return@launch
                 }
 
                 val result: WritableMap = Arguments.createMap()
-                result.putString("streamUrl", bestAudio.content)
+                result.putString("streamUrl", chosenAudio.content)
                 result.putString("title", streamInfo.name)
                 result.putString("duration", streamInfo.duration.toString())
                 result.putString(

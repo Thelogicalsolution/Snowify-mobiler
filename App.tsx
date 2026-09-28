@@ -573,7 +573,7 @@ function AppContent() {
     });
 
     try {
-      const stream = await getStreamUrl(item.url);
+      const stream = await getStreamUrl(item.url, settings.audioQuality);
       const localPath = await downloadTrackAudio(stream.streamUrl, item.url);
 
       const entry: DownloadedTrack = {
@@ -584,7 +584,7 @@ function AppContent() {
       };
 
       setDownloads(prev => [...prev.filter(d => d.url !== item.url), entry]);
-      logDebug(`Downloaded: ${item.name}`);
+      logDebug(`Downloaded (${settings.audioQuality}): ${item.name}`);
     } catch (e: any) {
       const msg = e?.message ?? 'Download failed';
       setSearchError(msg);
@@ -676,7 +676,7 @@ function AppContent() {
         thumbnailUrl = downloaded.thumbnailUrl;
         logDebug(`Playing offline: ${title}`);
       } else {
-        const stream = await getStreamUrl(item.url);
+        const stream = await getStreamUrl(item.url, settings.audioQuality);
         streamUrl = stream.streamUrl;
         title = stream.title || item.name;
         thumbnailUrl = stream.thumbnailUrl || item.thumbnailUrl;
@@ -696,7 +696,7 @@ function AppContent() {
       setQueueIndex(index);
       setNowPlaying(item);
       if (!downloaded) {
-        logDebug(`Playing: ${item.name}`);
+        logDebug(`Playing (${settings.audioQuality}): ${item.name}`);
       }
 
       if (isNewQueue) {
@@ -1058,7 +1058,7 @@ function AppContent() {
                 />
                 <SettingsRow
                   label="Audio quality"
-                  description="Higher quality uses more bandwidth"
+                  description="Higher quality uses more bandwidth. Downloads keep the quality they were saved at."
                   control={
                     <TouchableOpacity
                       style={styles.settingsDropdown}
