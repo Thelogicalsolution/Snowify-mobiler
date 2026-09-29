@@ -1,6 +1,6 @@
 type LogEntry = { time: string; message: string };
 
-const MAX_LOGS = 200;
+const MAX_LOGS = 500;
 let buffer: LogEntry[] = [];
 
 export function logDebug(message: string) {

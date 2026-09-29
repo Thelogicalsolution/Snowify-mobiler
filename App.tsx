@@ -413,11 +413,14 @@ function AppContent() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    setupPlayer().catch(error => {
-      const msg = error?.message ?? 'Audio player failed to initialize';
-      setSearchError(msg);
-      logDebug(`Player init failed: ${msg}`);
-    });
+    logDebug('App started');
+    setupPlayer()
+      .then(() => logDebug('Player initialized'))
+      .catch(error => {
+        const msg = error?.message ?? 'Audio player failed to initialize';
+        setSearchError(msg);
+        logDebug(`Player init failed: ${msg}`);
+      });
   }, []);
 
   useEffect(() => {
@@ -435,6 +438,9 @@ function AppContent() {
       setStoreLoaded(true);
       setSettingsLoaded(true);
       setDownloadsLoaded(true);
+      logDebug(
+        `Loaded data: ${liked.length} liked, ${pls.length} playlists, ${loadedDownloads.length} downloads`,
+      );
     })();
   }, []);
 
@@ -480,7 +486,14 @@ function AppContent() {
 
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
-      if (repeatMode === 'all' || (repeatMode === 'off' && settings.autoplay)) {
+      const willAdvance =
+        repeatMode === 'all' || (repeatMode === 'off' && settings.autoplay);
+      logDebug(
+        `Queue ended (repeat=${repeatMode}, autoplay=${settings.autoplay}) -> ${
+          willAdvance ? 'advancing' : 'stopping'
+        }`,
+      );
+      if (willAdvance) {
         goNextRef.current();
       }
     });
@@ -491,6 +504,13 @@ function AppContent() {
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackError, (error: any) => {
       logDebug(`Playback error: ${error?.message ?? JSON.stringify(error)}`);
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.PlaybackState, (data: any) => {
+      logDebug(`Playback state: ${data?.state ?? JSON.stringify(data)}`);
     });
     return () => sub.remove();
   }, []);
@@ -509,9 +529,11 @@ function AppContent() {
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       setSearchError(null);
+      logDebug(`Searching: "${query}"`);
       try {
         const found = await searchVideos(query);
         setResults(found);
+        logDebug(`Search results: ${found.length} for "${query}"`);
       } catch (e: any) {
         const msg = e?.message ?? 'Search failed';
         setSearchError(msg);
@@ -531,6 +553,7 @@ function AppContent() {
 
   function changeView(newView: ViewName) {
     if (newView === view) return;
+    logDebug(`View: ${view} -> ${newView}`);
 
     if (!settings.animationsEnabled) {
       setView(newView);
@@ -557,6 +580,8 @@ function AppContent() {
   }
 
   function toggleLike(item: Track) {
+    const wasLiked = isLiked(item.url);
+    logDebug(`${wasLiked ? 'Unliked' : 'Liked'}: ${item.name}`);
     setLikedSongs(prev =>
       prev.some(t => t.url === item.url)
         ? prev.filter(t => t.url !== item.url)
@@ -575,6 +600,7 @@ function AppContent() {
   async function handleDownloadTrack(item: Track) {
     if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
 
+    logDebug(`Download started: ${item.name}`);
     setDownloadingUrls(prev => {
       const next = new Set(prev);
       next.add(item.url);
@@ -621,6 +647,8 @@ function AppContent() {
   }
 
   function addTrackToPlaylist(playlistId: string, track: Track) {
+    const playlistName = playlists.find(p => p.id === playlistId)?.name ?? playlistId;
+    logDebug(`Added "${track.name}" to playlist "${playlistName}"`);
     setPlaylists(prev =>
       prev.map(p =>
         p.id === playlistId
@@ -640,6 +668,7 @@ function AppContent() {
     const name = newPlaylistName.trim() || 'My Playlist';
     const id = makePlaylistId();
     const track = addToPlaylistTarget;
+    logDebug(`Created playlist "${name}"${track ? ` with "${track.name}"` : ''}`);
     setPlaylists(prev => [...prev, { id, name, tracks: track ? [track] : [] }]);
     setNewPlaylistModalVisible(false);
     setAddToPlaylistTarget(null);
@@ -648,8 +677,10 @@ function AppContent() {
 
   function openPlaylistView(id: 'liked' | 'downloaded' | string) {
     if (id === 'liked') {
+      logDebug('Opened playlist: Liked Songs');
       setViewingPlaylist({ id: 'liked', name: 'Liked Songs', tracks: likedSongs });
     } else if (id === 'downloaded') {
+      logDebug('Opened playlist: Downloaded');
       setViewingPlaylist({
         id: 'downloaded',
         name: 'Downloaded',
@@ -662,6 +693,7 @@ function AppContent() {
     } else {
       const pl = playlists.find(p => p.id === id);
       if (!pl) return;
+      logDebug(`Opened playlist: ${pl.name}`);
       setViewingPlaylist({ id: pl.id, name: pl.name, tracks: pl.tracks });
     }
     changeView('playlist');
@@ -675,6 +707,7 @@ function AppContent() {
     const item = list[index];
     if (!item) return;
 
+    logDebug(`playAtIndex: "${item.name}" (index ${index}, newQueue=${isNewQueue})`);
     setLoadingTrack(item.url);
     try {
       const downloaded = getDownloadedTrack(item.url);
@@ -730,6 +763,7 @@ function AppContent() {
   }
 
   function goNext() {
+    logDebug('goNext called');
     if (queue.length === 0) return;
 
     if (shuffleOn) {
@@ -755,6 +789,7 @@ function AppContent() {
   }
 
   function goPrevious() {
+    logDebug('goPrevious called');
     if (queue.length === 0) return;
 
     if (progress.position > 3) {
@@ -785,6 +820,7 @@ function AppContent() {
   function toggleShuffle() {
     setShuffleOn(on => {
       const next = !on;
+      logDebug(`Shuffle: ${next ? 'on' : 'off'}`);
       if (next && queue.length > 0) {
         const order = shuffledOrder(queue.length, queueIndex);
         setShuffleOrder(order);
@@ -795,12 +831,15 @@ function AppContent() {
   }
 
   function cycleRepeat() {
-    setRepeatMode(mode =>
-      mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off',
-    );
+    setRepeatMode(mode => {
+      const next = mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off';
+      logDebug(`Repeat mode: ${next}`);
+      return next;
+    });
   }
 
   async function togglePlayPause() {
+    logDebug(playing ? 'Pause pressed' : 'Play pressed');
     if (playing) {
       await TrackPlayer.pause();
     } else {
@@ -809,13 +848,18 @@ function AppContent() {
   }
 
   function togglePlayerExpanded() {
-    setPlayerExpanded(v => !v);
+    setPlayerExpanded(v => {
+      const next = !v;
+      logDebug(`Player panel: ${next ? 'expanded' : 'collapsed'}`);
+      return next;
+    });
   }
 
   function updateSetting<K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K],
   ) {
+    logDebug(`Setting changed: ${String(key)} = ${JSON.stringify(value)}`);
     setSettings(prev => ({ ...prev, [key]: value }));
   }
 
@@ -823,6 +867,11 @@ function AppContent() {
     const order: AudioQuality[] = ['best', 'balanced', 'low'];
     const idx = order.indexOf(settings.audioQuality);
     updateSetting('audioQuality', order[(idx + 1) % order.length]);
+  }
+
+  function handleSeek(v: number) {
+    logDebug(`Seek: ${formatTime(v * progress.duration)}`);
+    TrackPlayer.seekTo(v * progress.duration);
   }
 
   function handleResetAllData() {
@@ -1187,7 +1236,7 @@ function AppContent() {
                       ? progress.position / progress.duration
                       : 0
                   }
-                  onChange={v => TrackPlayer.seekTo(v * progress.duration)}
+                  onChange={handleSeek}
                   height={3}
                   commitOnRelease
                 />
