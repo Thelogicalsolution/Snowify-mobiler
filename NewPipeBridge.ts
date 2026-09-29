@@ -11,6 +11,7 @@ type StreamResult = {
   title: string;
   duration: string;
   thumbnailUrl: string;
+  format: string;
 };
 
 export type StreamQuality = 'best' | 'balanced' | 'low';

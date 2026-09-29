@@ -105,10 +105,19 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                     return@launch
                 }
 
+                // The real container/codec suffix (e.g. "m4a", "webm") - used
+                // on the JS side so downloaded files are saved with a correct
+                // extension instead of a generic one. Local files have no HTTP
+                // content-type header for the player to sniff, so a wrong or
+                // missing extension can make it misdetect the format, causing
+                // random playback stops and missed "track ended" events.
+                val formatSuffix = chosenAudio.format?.suffix ?: "m4a"
+
                 val result: WritableMap = Arguments.createMap()
                 result.putString("streamUrl", chosenAudio.content)
                 result.putString("title", streamInfo.name)
                 result.putString("duration", streamInfo.duration.toString())
+                result.putString("format", formatSuffix)
                 result.putString(
                     "thumbnailUrl",
                     streamInfo.thumbnails.firstOrNull()?.url ?: ""

@@ -40,6 +40,7 @@ import {
   Library,
   ChevronLeft,
   ChevronDown,
+  ChevronUp,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -372,6 +373,7 @@ function AppContent() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
+  const [playerExpanded, setPlayerExpanded] = useState(true);
 
   const [queue, setQueue] = useState<SearchResult[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
@@ -487,6 +489,13 @@ function AppContent() {
   }, [repeatMode, settings.autoplay]);
 
   useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.PlaybackError, (error: any) => {
+      logDebug(`Playback error: ${error?.message ?? JSON.stringify(error)}`);
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
@@ -574,7 +583,11 @@ function AppContent() {
 
     try {
       const stream = await getStreamUrl(item.url, settings.audioQuality);
-      const localPath = await downloadTrackAudio(stream.streamUrl, item.url);
+      const localPath = await downloadTrackAudio(
+        stream.streamUrl,
+        item.url,
+        stream.format || 'm4a',
+      );
 
       const entry: DownloadedTrack = {
         url: item.url,
@@ -584,7 +597,7 @@ function AppContent() {
       };
 
       setDownloads(prev => [...prev.filter(d => d.url !== item.url), entry]);
-      logDebug(`Downloaded (${settings.audioQuality}): ${item.name}`);
+      logDebug(`Downloaded (${settings.audioQuality}, .${stream.format}): ${item.name}`);
     } catch (e: any) {
       const msg = e?.message ?? 'Download failed';
       setSearchError(msg);
@@ -795,6 +808,10 @@ function AppContent() {
     }
   }
 
+  function togglePlayerExpanded() {
+    setPlayerExpanded(v => !v);
+  }
+
   function updateSetting<K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K],
@@ -887,7 +904,8 @@ function AppContent() {
     );
   }
 
-  const bottomPad = tabBarHeight + (nowPlaying ? 150 : 10);
+  const bottomPad =
+    tabBarHeight + (nowPlaying ? (playerExpanded ? 150 : 64) : 10);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -1157,25 +1175,30 @@ function AppContent() {
           style={[
             styles.miniPlayer,
             { bottom: tabBarHeight },
+            !playerExpanded && styles.miniPlayerCollapsedPadding,
           ]}
         >
-          <View style={styles.progressBarWrapper}>
-            <DraggableBar
-              value={
-                progress.duration > 0
-                  ? progress.position / progress.duration
-                  : 0
-              }
-              onChange={v => TrackPlayer.seekTo(v * progress.duration)}
-              height={3}
-              commitOnRelease
-            />
-          </View>
+          {playerExpanded && (
+            <>
+              <View style={styles.progressBarWrapper}>
+                <DraggableBar
+                  value={
+                    progress.duration > 0
+                      ? progress.position / progress.duration
+                      : 0
+                  }
+                  onChange={v => TrackPlayer.seekTo(v * progress.duration)}
+                  height={3}
+                  commitOnRelease
+                />
+              </View>
 
-          <View style={styles.timeRow}>
-            <Text style={styles.timeText}>{formatTime(progress.position)}</Text>
-            <Text style={styles.timeText}>{formatTime(progress.duration)}</Text>
-          </View>
+              <View style={styles.timeRow}>
+                <Text style={styles.timeText}>{formatTime(progress.position)}</Text>
+                <Text style={styles.timeText}>{formatTime(progress.duration)}</Text>
+              </View>
+            </>
+          )}
 
           <View style={styles.miniPlayerTop}>
             {nowPlaying.thumbnailUrl ? (
@@ -1194,49 +1217,78 @@ function AppContent() {
                 YouTube
               </Text>
             </View>
-            <AnimatedHeart
-              liked={isLiked(nowPlaying.url)}
-              onLikeToggle={() => toggleLike(nowPlaying)}
-              animationsEnabled={settings.animationsEnabled}
-            />
-          </View>
-
-          <View style={styles.transportRow}>
-            <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
-              <Shuffle size={18} color={shuffleOn ? ACCENT : '#FFFFFF'} />
-            </TouchableOpacity>
-
-            <TouchableOpacity hitSlop={10} onPress={goPrevious}>
-              <SkipBack size={20} color="#FFFFFF" fill="#FFFFFF" />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
-              {playing ? (
-                <Pause size={20} color={BG} fill={BG} />
+            {playerExpanded && (
+              <AnimatedHeart
+                liked={isLiked(nowPlaying.url)}
+                onLikeToggle={() => toggleLike(nowPlaying)}
+                animationsEnabled={settings.animationsEnabled}
+              />
+            )}
+            <TouchableOpacity
+              hitSlop={10}
+              onPress={togglePlayerExpanded}
+              style={styles.miniPlayerChevron}
+            >
+              {playerExpanded ? (
+                <ChevronDown size={20} color={TEXT_DIM} />
               ) : (
-                <Play size={20} color={BG} fill={BG} />
+                <ChevronUp size={20} color={TEXT_DIM} />
               )}
             </TouchableOpacity>
-
-            <TouchableOpacity hitSlop={10} onPress={goNext}>
-              <SkipForward size={20} color="#FFFFFF" fill="#FFFFFF" />
-            </TouchableOpacity>
-
-            <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
-              {repeatMode === 'one' ? (
-                <Repeat1 size={18} color={ACCENT} />
-              ) : (
-                <Repeat size={18} color={repeatMode === 'all' ? ACCENT : '#FFFFFF'} />
-              )}
-            </TouchableOpacity>
+            {!playerExpanded && (
+              <TouchableOpacity
+                style={styles.collapsedPlayButton}
+                onPress={togglePlayPause}
+              >
+                {playing ? (
+                  <Pause size={16} color={BG} fill={BG} />
+                ) : (
+                  <Play size={16} color={BG} fill={BG} />
+                )}
+              </TouchableOpacity>
+            )}
           </View>
 
-          <View style={styles.volumeRow}>
-            <Volume2 size={14} color={TEXT_DIM} />
-            <View style={styles.volumeBarWrapper}>
-              <DraggableBar value={volume} onChange={setVolume} height={3} />
-            </View>
-          </View>
+          {playerExpanded && (
+            <>
+              <View style={styles.transportRow}>
+                <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
+                  <Shuffle size={18} color={shuffleOn ? ACCENT : '#FFFFFF'} />
+                </TouchableOpacity>
+
+                <TouchableOpacity hitSlop={10} onPress={goPrevious}>
+                  <SkipBack size={20} color="#FFFFFF" fill="#FFFFFF" />
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
+                  {playing ? (
+                    <Pause size={20} color={BG} fill={BG} />
+                  ) : (
+                    <Play size={20} color={BG} fill={BG} />
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity hitSlop={10} onPress={goNext}>
+                  <SkipForward size={20} color="#FFFFFF" fill="#FFFFFF" />
+                </TouchableOpacity>
+
+                <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
+                  {repeatMode === 'one' ? (
+                    <Repeat1 size={18} color={ACCENT} />
+                  ) : (
+                    <Repeat size={18} color={repeatMode === 'all' ? ACCENT : '#FFFFFF'} />
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.volumeRow}>
+                <Volume2 size={14} color={TEXT_DIM} />
+                <View style={styles.volumeBarWrapper}>
+                  <DraggableBar value={volume} onChange={setVolume} height={3} />
+                </View>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -1592,6 +1644,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER,
   },
+  miniPlayerCollapsedPadding: { paddingBottom: 8 },
   progressBarWrapper: { marginHorizontal: 48 },
   barTouchWrapper: {
     width: '100%',
@@ -1628,6 +1681,16 @@ const styles = StyleSheet.create({
   miniPlayerInfo: { flex: 1 },
   miniPlayerTitle: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
   miniPlayerArtist: { color: TEXT_DIM, fontSize: 11, marginTop: 2 },
+  miniPlayerChevron: { marginLeft: 8 },
+  collapsedPlayButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 10,
+  },
   transportRow: {
     flexDirection: 'row',
     alignItems: 'center',

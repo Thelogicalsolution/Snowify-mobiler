@@ -12,7 +12,7 @@ export interface AppSettings {
 const SETTINGS_KEY = 'snowify_settings';
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  autoplay: false,
+  autoplay: true,
   audioQuality: 'best',
   animationsEnabled: true,
   developerMode: false,

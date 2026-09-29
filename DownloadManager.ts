@@ -8,8 +8,8 @@ function hashString(input: string): string {
   return (hash >>> 0).toString(16);
 }
 
-function localFileNameFor(trackUrl: string): string {
-  return `snowify_${hashString(trackUrl)}.media`;
+function localFileNameFor(trackUrl: string, format: string): string {
+  return `snowify_${hashString(trackUrl)}.${format}`;
 }
 
 function downloadsDir(): string {
@@ -27,9 +27,10 @@ async function ensureDownloadsDir(): Promise<void> {
 export async function downloadTrackAudio(
   streamUrl: string,
   trackUrl: string,
+  format: string = 'm4a',
 ): Promise<string> {
   await ensureDownloadsDir();
-  const destPath = `${downloadsDir()}/${localFileNameFor(trackUrl)}`;
+  const destPath = `${downloadsDir()}/${localFileNameFor(trackUrl, format)}`;
 
   const alreadyExists = await ReactNativeBlobUtil.fs.exists(destPath);
   if (alreadyExists) {
