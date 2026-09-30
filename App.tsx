@@ -411,6 +411,7 @@ function AppContent() {
   const playing = useIsPlaying();
   const progress = useProgress(0.5);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handledEndRef = useRef(false);
 
   useEffect(() => {
     logDebug('App started');
@@ -484,22 +485,17 @@ function AppContent() {
 
   const goNextRef = useRef<() => void>(() => {});
 
+  // Diagnostic only: @rntp/player has not been observed to emit
+  // PlaybackQueueEnded in testing (zero occurrences across multiple full
+  // track playthroughs), so this no longer drives autoplay/repeat-all -
+  // see the progress-based detector below instead. Kept in case it ever
+  // does fire, to help narrow down why it hadn't been.
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
-      const willAdvance =
-        repeatMode === 'all' || (repeatMode === 'off' && settings.autoplay);
-      logDebug(
-        `Queue ended (repeat=${repeatMode}, autoplay=${settings.autoplay}) -> ${
-          willAdvance ? 'advancing' : 'stopping'
-        }`,
-      );
-      if (willAdvance) {
-        goNextRef.current();
-      }
+      logDebug('(diagnostic) PlaybackQueueEnded fired');
     });
     return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repeatMode, settings.autoplay]);
+  }, []);
 
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackError, (error: any) => {
@@ -508,12 +504,48 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
+  // Diagnostic only, same reasoning as PlaybackQueueEnded above.
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackState, (data: any) => {
-      logDebug(`Playback state: ${data?.state ?? JSON.stringify(data)}`);
+      logDebug(`(diagnostic) PlaybackState fired: ${data?.state ?? JSON.stringify(data)}`);
     });
     return () => sub.remove();
   }, []);
+
+  // Real autoplay/repeat-all/repeat-one-adjacent detection, based on the
+  // progress hook instead of native queue-ended events (which don't appear
+  // to fire in this player fork). Treats being within ~1.5s of the track's
+  // duration as "finished". handledEndRef prevents re-triggering every
+  // 500ms poll once detected, and auto re-arms once we're clearly away
+  // from the end again (so replaying the same track still works).
+  useEffect(() => {
+    if (!nowPlaying || progress.duration <= 0) return;
+
+    const remaining = progress.duration - progress.position;
+
+    if (remaining > 1.5) {
+      handledEndRef.current = false;
+      return;
+    }
+
+    if (handledEndRef.current) return;
+    handledEndRef.current = true;
+
+    if (repeatMode === 'one') {
+      // Native RepeatMode.One already handles looping this track.
+      return;
+    }
+
+    const willAdvance = repeatMode === 'all' || settings.autoplay;
+    logDebug(
+      `Track end reached (remaining=${remaining.toFixed(2)}s, repeat=${repeatMode}, autoplay=${settings.autoplay}) -> ${
+        willAdvance ? 'advancing' : 'stopping'
+      }`,
+    );
+    if (willAdvance) {
+      goNextRef.current();
+    }
+  }, [progress.position, progress.duration, nowPlaying, repeatMode, settings.autoplay]);
 
   useEffect(() => {
     if (debounceRef.current) {
