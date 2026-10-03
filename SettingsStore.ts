@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppLanguage } from './Translations';
 
 export type AudioQuality = 'best' | 'balanced' | 'low';
 
@@ -7,6 +8,7 @@ export interface AppSettings {
   audioQuality: AudioQuality;
   animationsEnabled: boolean;
   developerMode: boolean;
+  language: AppLanguage;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -16,6 +18,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   audioQuality: 'best',
   animationsEnabled: true,
   developerMode: false,
+  language: 'en',
 };
 
 export async function loadSettings(): Promise<AppSettings> {

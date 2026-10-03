@@ -70,6 +70,7 @@ import {
   saveSettings,
   resetAllData,
 } from './SettingsStore';
+import { STRINGS, LANGUAGE_LABELS, AppLanguage } from './Translations';
 import { logDebug, getDebugLogs, clearDebugLogs } from './DebugLog';
 import {
   DownloadedTrack,
@@ -89,12 +90,6 @@ const CARD = '#17171D';
 const BORDER = '#252530';
 const TEXT_DIM = '#8A8A9A';
 const TAB_BAR_FALLBACK_HEIGHT = 70;
-
-const AUDIO_QUALITY_LABELS: Record<AudioQuality, string> = {
-  best: 'Best',
-  balanced: 'Balanced',
-  low: 'Low',
-};
 
 let playerSetupDone = false;
 
@@ -408,6 +403,8 @@ function AppContent() {
     new Set(),
   );
 
+  const t = STRINGS[settings.language];
+
   const playing = useIsPlaying();
   const progress = useProgress(0.5);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -486,10 +483,8 @@ function AppContent() {
   const goNextRef = useRef<() => void>(() => {});
 
   // Diagnostic only: @rntp/player has not been observed to emit
-  // PlaybackQueueEnded in testing (zero occurrences across multiple full
-  // track playthroughs), so this no longer drives autoplay/repeat-all -
-  // see the progress-based detector below instead. Kept in case it ever
-  // does fire, to help narrow down why it hadn't been.
+  // PlaybackQueueEnded in testing, so this no longer drives
+  // autoplay/repeat-all - see the progress-based detector below instead.
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
       logDebug('(diagnostic) PlaybackQueueEnded fired');
@@ -512,12 +507,8 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  // Real autoplay/repeat-all/repeat-one-adjacent detection, based on the
-  // progress hook instead of native queue-ended events (which don't appear
-  // to fire in this player fork). Treats being within ~1.5s of the track's
-  // duration as "finished". handledEndRef prevents re-triggering every
-  // 500ms poll once detected, and auto re-arms once we're clearly away
-  // from the end again (so replaying the same track still works).
+  // Real autoplay/repeat-all detection, based on the progress hook instead
+  // of native queue-ended events (which don't fire in this player fork).
   useEffect(() => {
     if (!nowPlaying || progress.duration <= 0) return;
 
@@ -608,15 +599,15 @@ function AppContent() {
   }
 
   function isLiked(url: string): boolean {
-    return likedSongs.some(t => t.url === url);
+    return likedSongs.some(t2 => t2.url === url);
   }
 
   function toggleLike(item: Track) {
     const wasLiked = isLiked(item.url);
     logDebug(`${wasLiked ? 'Unliked' : 'Liked'}: ${item.name}`);
     setLikedSongs(prev =>
-      prev.some(t => t.url === item.url)
-        ? prev.filter(t => t.url !== item.url)
+      prev.some(t2 => t2.url === item.url)
+        ? prev.filter(t2 => t2.url !== item.url)
         : [...prev, item],
     );
   }
@@ -686,7 +677,7 @@ function AppContent() {
         p.id === playlistId
           ? {
               ...p,
-              tracks: p.tracks.some(t => t.url === track.url)
+              tracks: p.tracks.some(tr => tr.url === track.url)
                 ? p.tracks
                 : [...p.tracks, track],
             }
@@ -697,7 +688,7 @@ function AppContent() {
   }
 
   function handleCreatePlaylist() {
-    const name = newPlaylistName.trim() || 'My Playlist';
+    const name = newPlaylistName.trim() || t.myPlaylist;
     const id = makePlaylistId();
     const track = addToPlaylistTarget;
     logDebug(`Created playlist "${name}"${track ? ` with "${track.name}"` : ''}`);
@@ -710,12 +701,12 @@ function AppContent() {
   function openPlaylistView(id: 'liked' | 'downloaded' | string) {
     if (id === 'liked') {
       logDebug('Opened playlist: Liked Songs');
-      setViewingPlaylist({ id: 'liked', name: 'Liked Songs', tracks: likedSongs });
+      setViewingPlaylist({ id: 'liked', name: t.likedSongs, tracks: likedSongs });
     } else if (id === 'downloaded') {
       logDebug('Opened playlist: Downloaded');
       setViewingPlaylist({
         id: 'downloaded',
-        name: 'Downloaded',
+        name: t.downloaded,
         tracks: downloads.map(d => ({
           url: d.url,
           name: d.name,
@@ -901,40 +892,42 @@ function AppContent() {
     updateSetting('audioQuality', order[(idx + 1) % order.length]);
   }
 
+  function cycleLanguage() {
+    const order: AppLanguage[] = ['en', 'uk'];
+    const idx = order.indexOf(settings.language);
+    updateSetting('language', order[(idx + 1) % order.length]);
+  }
+
   function handleSeek(v: number) {
     logDebug(`Seek: ${formatTime(v * progress.duration)}`);
     TrackPlayer.seekTo(v * progress.duration);
   }
 
   function handleResetAllData() {
-    Alert.alert(
-      'Reset all data',
-      'This will delete all playlists, liked songs, downloads, and settings. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            await Promise.all(
-              downloads.map(d => deleteDownloadedFile(d.localPath)),
-            );
-            await resetAllData();
-            setLikedSongs([]);
-            setPlaylists([]);
-            setDownloads([]);
-            setSettings(DEFAULT_SETTINGS);
-            logDebug('All data reset by user');
-          },
+    Alert.alert(t.resetAlertTitle, t.resetAlertMessage, [
+      { text: t.cancel, style: 'cancel' },
+      {
+        text: t.resetButton,
+        style: 'destructive',
+        onPress: async () => {
+          await Promise.all(
+            downloads.map(d => deleteDownloadedFile(d.localPath)),
+          );
+          await resetAllData();
+          setLikedSongs([]);
+          setPlaylists([]);
+          setDownloads([]);
+          setSettings(DEFAULT_SETTINGS);
+          logDebug('All data reset by user');
         },
-      ],
-    );
+      },
+    ]);
   }
 
   function handleCopyLogs() {
     const text = getDebugLogs();
     Clipboard.setString(text);
-    Alert.alert('Copied', 'Debug logs copied to clipboard.');
+    Alert.alert(t.copiedTitle, t.copiedMessage);
   }
 
   function handleClearLogs() {
@@ -996,13 +989,13 @@ function AppContent() {
         {view === 'search' && (
           <>
             <View style={styles.header}>
-              <Text style={styles.headerTitle}>Snowify</Text>
+              <Text style={styles.headerTitle}>{t.appTitle}</Text>
             </View>
 
             <View style={styles.searchContainer}>
               <TextInput
                 style={styles.searchInput}
-                placeholder="What do you want to listen to?"
+                placeholder={t.searchPlaceholder}
                 placeholderTextColor={TEXT_DIM}
                 value={query}
                 onChangeText={setQuery}
@@ -1027,7 +1020,7 @@ function AppContent() {
               }
               ListEmptyComponent={
                 !searching && query.trim() ? (
-                  <Text style={styles.emptyText}>No results</Text>
+                  <Text style={styles.emptyText}>{t.noResults}</Text>
                 ) : undefined
               }
             />
@@ -1037,12 +1030,12 @@ function AppContent() {
         {view === 'library' && (
           <>
             <View style={styles.header}>
-              <Text style={styles.headerTitle}>Your Library</Text>
+              <Text style={styles.headerTitle}>{t.yourLibrary}</Text>
             </View>
             <View style={styles.libraryHeaderRow}>
-              <Text style={styles.libraryHeaderLabel}>Playlists</Text>
+              <Text style={styles.libraryHeaderLabel}>{t.playlistsLabel}</Text>
               <TouchableOpacity onPress={() => setNewPlaylistModalVisible(true)}>
-                <Text style={styles.libraryAddButton}>+ New</Text>
+                <Text style={styles.libraryAddButton}>{t.newButton}</Text>
               </TouchableOpacity>
             </View>
             <FlatList
@@ -1062,9 +1055,9 @@ function AppContent() {
                       <Heart size={20} color="#FFFFFF" fill="#FFFFFF" />
                     </View>
                     <View style={styles.trackInfo}>
-                      <Text style={styles.trackTitle}>Liked Songs</Text>
+                      <Text style={styles.trackTitle}>{t.likedSongs}</Text>
                       <Text style={styles.playlistSubtitle}>
-                        {likedSongs.length} songs
+                        {t.songsCount(likedSongs.length)}
                       </Text>
                     </View>
                   </TouchableOpacity>
@@ -1076,9 +1069,9 @@ function AppContent() {
                       <Download size={20} color="#FFFFFF" />
                     </View>
                     <View style={styles.trackInfo}>
-                      <Text style={styles.trackTitle}>Downloaded</Text>
+                      <Text style={styles.trackTitle}>{t.downloaded}</Text>
                       <Text style={styles.playlistSubtitle}>
-                        {downloads.length} songs
+                        {t.songsCount(downloads.length)}
                       </Text>
                     </View>
                   </TouchableOpacity>
@@ -1095,7 +1088,7 @@ function AppContent() {
                   <View style={styles.trackInfo}>
                     <Text style={styles.trackTitle}>{item.name}</Text>
                     <Text style={styles.playlistSubtitle}>
-                      {item.tracks.length} songs
+                      {t.songsCount(item.tracks.length)}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -1116,7 +1109,7 @@ function AppContent() {
             </View>
             <FlatList
               data={viewingPlaylist.tracks}
-              keyExtractor={t => t.url}
+              keyExtractor={tr => tr.url}
               contentContainerStyle={[
                 styles.listContent,
                 { paddingBottom: bottomPad },
@@ -1125,7 +1118,7 @@ function AppContent() {
                 renderTrackRow(item, index, viewingPlaylist.tracks)
               }
               ListEmptyComponent={
-                <Text style={styles.emptyText}>No songs yet</Text>
+                <Text style={styles.emptyText}>{t.noSongsYet}</Text>
               }
             />
           </>
@@ -1134,7 +1127,7 @@ function AppContent() {
         {view === 'settings' && (
           <>
             <View style={styles.header}>
-              <Text style={styles.headerTitle}>Settings</Text>
+              <Text style={styles.headerTitle}>{t.settingsTitle}</Text>
             </View>
             <ScrollView
               contentContainerStyle={[
@@ -1142,10 +1135,10 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
             >
-              <SettingsSection title="Playback">
+              <SettingsSection title={t.sectionPlayback}>
                 <SettingsRow
-                  label="Autoplay"
-                  description="Continue through the current queue when a track ends"
+                  label={t.autoplay}
+                  description={t.autoplayDesc}
                   control={
                     <Switch
                       value={settings.autoplay}
@@ -1156,15 +1149,19 @@ function AppContent() {
                   }
                 />
                 <SettingsRow
-                  label="Audio quality"
-                  description="Higher quality uses more bandwidth. Downloads keep the quality they were saved at."
+                  label={t.audioQuality}
+                  description={t.audioQualityDesc}
                   control={
                     <TouchableOpacity
                       style={styles.settingsDropdown}
                       onPress={cycleAudioQuality}
                     >
                       <Text style={styles.settingsDropdownText}>
-                        {AUDIO_QUALITY_LABELS[settings.audioQuality]}
+                        {settings.audioQuality === 'best'
+                          ? t.qualityBest
+                          : settings.audioQuality === 'balanced'
+                          ? t.qualityBalanced
+                          : t.qualityLow}
                       </Text>
                       <ChevronDown size={14} color={TEXT_DIM} />
                     </TouchableOpacity>
@@ -1172,10 +1169,10 @@ function AppContent() {
                 />
               </SettingsSection>
 
-              <SettingsSection title="Appearance">
+              <SettingsSection title={t.sectionAppearance}>
                 <SettingsRow
-                  label="Animations"
-                  description="Enable smooth transitions and animations throughout the app"
+                  label={t.animations}
+                  description={t.animationsDesc}
                   control={
                     <Switch
                       value={settings.animationsEnabled}
@@ -1185,31 +1182,46 @@ function AppContent() {
                     />
                   }
                 />
-              </SettingsSection>
-
-              <SettingsSection title="Data">
                 <SettingsRow
-                  label="Reset all data"
-                  description="Delete all playlists, liked songs, downloads, and settings"
+                  label={t.languageLabel}
+                  description={t.languageDesc}
                   control={
                     <TouchableOpacity
-                      style={styles.settingsDangerButton}
-                      onPress={handleResetAllData}
+                      style={styles.settingsDropdown}
+                      onPress={cycleLanguage}
                     >
-                      <Text style={styles.settingsDangerButtonText}>Reset</Text>
+                      <Text style={styles.settingsDropdownText}>
+                        {LANGUAGE_LABELS[settings.language]}
+                      </Text>
+                      <ChevronDown size={14} color={TEXT_DIM} />
                     </TouchableOpacity>
                   }
                 />
               </SettingsSection>
 
-              <SettingsSection title="About">
-                <SettingsRow label="Version" description="v0.1.0" control={<View />} />
+              <SettingsSection title={t.sectionData}>
+                <SettingsRow
+                  label={t.resetAllData}
+                  description={t.resetAllDataDesc}
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsDangerButton}
+                      onPress={handleResetAllData}
+                    >
+                      <Text style={styles.settingsDangerButtonText}>{t.resetButton}</Text>
+                    </TouchableOpacity>
+                  }
+                />
               </SettingsSection>
 
-              <SettingsSection title="Developer">
+              <SettingsSection title={t.sectionAbout}>
+                <SettingsRow label={t.version} description="v0.1.0" control={<View />} />
+              </SettingsSection>
+
+              <SettingsSection title={t.sectionDeveloper}>
                 <SettingsRow
-                  label="Developer Mode"
-                  description="Show debug logs"
+                  label={t.developerMode}
+                  description={t.developerModeDesc}
                   control={
                     <Switch
                       value={settings.developerMode}
@@ -1222,14 +1234,14 @@ function AppContent() {
               </SettingsSection>
 
               {settings.developerMode && (
-                <SettingsSection title="Debug Logs">
+                <SettingsSection title={t.sectionDebugLogs}>
                   <View style={styles.debugLogsButtonRow}>
                     <TouchableOpacity
                       style={styles.settingsSecondaryButton}
                       onPress={handleCopyLogs}
                     >
                       <Text style={styles.settingsSecondaryButtonText}>
-                        Copy Logs
+                        {t.copyLogs}
                       </Text>
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -1237,7 +1249,7 @@ function AppContent() {
                       onPress={handleClearLogs}
                     >
                       <Text style={styles.settingsSecondaryButtonText}>
-                        Clear
+                        {t.clearLogs}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -1383,7 +1395,7 @@ function AppContent() {
             <Text
               style={[styles.tabLabel, view === 'search' && styles.tabLabelActive]}
             >
-              Search
+              {t.tabSearch}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -1403,7 +1415,7 @@ function AppContent() {
                   styles.tabLabelActive,
               ]}
             >
-              Library
+              {t.tabLibrary}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -1420,7 +1432,7 @@ function AppContent() {
                 view === 'settings' && styles.tabLabelActive,
               ]}
             >
-              Settings
+              {t.tabSettings}
             </Text>
           </TouchableOpacity>
         </View>
@@ -1434,7 +1446,7 @@ function AppContent() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Track options</Text>
+            <Text style={styles.modalTitle}>{t.trackOptions}</Text>
 
             <TouchableOpacity
               style={styles.modalActionRow}
@@ -1466,17 +1478,17 @@ function AppContent() {
               )}
               <Text style={styles.modalActionText}>
                 {addToPlaylistTarget && downloadingUrls.has(addToPlaylistTarget.url)
-                  ? 'Downloading...'
+                  ? t.downloading
                   : addToPlaylistTarget && isDownloaded(addToPlaylistTarget.url)
-                  ? 'Remove download'
-                  : 'Download for offline'}
+                  ? t.removeDownload
+                  : t.downloadForOffline}
               </Text>
             </TouchableOpacity>
 
-            <Text style={styles.modalSubheading}>Add to playlist</Text>
+            <Text style={styles.modalSubheading}>{t.addToPlaylist}</Text>
             <ScrollView style={styles.modalScroll}>
               {playlists.length === 0 && (
-                <Text style={styles.modalEmptyText}>No playlists yet</Text>
+                <Text style={styles.modalEmptyText}>{t.noPlaylistsYet}</Text>
               )}
               {playlists.map(p => (
                 <TouchableOpacity
@@ -1496,13 +1508,13 @@ function AppContent() {
               style={styles.modalNewPlaylistRow}
               onPress={() => setNewPlaylistModalVisible(true)}
             >
-              <Text style={styles.modalNewPlaylistText}>+ New Playlist</Text>
+              <Text style={styles.modalNewPlaylistText}>{t.newPlaylistButton}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.modalCancelButton}
               onPress={() => setAddToPlaylistTarget(null)}
             >
-              <Text style={styles.modalCancelText}>Cancel</Text>
+              <Text style={styles.modalCancelText}>{t.cancel}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1516,12 +1528,12 @@ function AppContent() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Create playlist</Text>
+            <Text style={styles.modalTitle}>{t.createPlaylistTitle}</Text>
             <TextInput
               style={styles.modalInput}
               value={newPlaylistName}
               onChangeText={setNewPlaylistName}
-              placeholder="My Playlist"
+              placeholder={t.myPlaylist}
               placeholderTextColor={TEXT_DIM}
               autoFocus
             />
@@ -1532,13 +1544,13 @@ function AppContent() {
                   setNewPlaylistName('');
                 }}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t.cancel}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.modalOkButton}
                 onPress={handleCreatePlaylist}
               >
-                <Text style={styles.modalOkText}>Create</Text>
+                <Text style={styles.modalOkText}>{t.createButton}</Text>
               </TouchableOpacity>
             </View>
           </View>
