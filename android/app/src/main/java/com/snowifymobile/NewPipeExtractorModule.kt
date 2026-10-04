@@ -17,6 +17,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 
 class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -42,19 +43,45 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val youtubeService = ServiceList.YouTube
-                val searchExtractor = youtubeService.getSearchExtractor(query)
-                searchExtractor.fetchPage()
+
+                // Run two searches: one restricted to YouTube's "Songs"
+                // category (real music-metadata results, matching what
+                // YouTube's own Music filter chip returns), and one with
+                // the default "videos" filter as a fallback/supplement.
+                // Results are merged music-first, deduped by URL, so
+                // songs surface above regular videos without discarding
+                // anything.
+                val musicExtractor = youtubeService.getSearchExtractor(
+                    query,
+                    listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+                    ""
+                )
+                val videoExtractor = youtubeService.getSearchExtractor(
+                    query,
+                    listOf(YoutubeSearchQueryHandlerFactory.VIDEOS),
+                    ""
+                )
+
+                musicExtractor.fetchPage()
+                videoExtractor.fetchPage()
+
+                val seenUrls = HashSet<String>()
+                val orderedItems = mutableListOf<StreamInfoItem>()
+
+                for (item in musicExtractor.initialPage.items) {
+                    if (item is StreamInfoItem && seenUrls.add(item.url)) {
+                        orderedItems.add(item)
+                    }
+                }
+                for (item in videoExtractor.initialPage.items) {
+                    if (item is StreamInfoItem && seenUrls.add(item.url)) {
+                        orderedItems.add(item)
+                    }
+                }
 
                 val results: WritableArray = Arguments.createArray()
 
-                for (item in searchExtractor.initialPage.items) {
-                    // Only include actual playable videos.
-                    // This skips mixes/radios, playlists, and channels,
-                    // which have URLs the stream extractor can't play directly.
-                    if (item !is StreamInfoItem) {
-                        continue
-                    }
-
+                for (item in orderedItems) {
                     val map: WritableMap = Arguments.createMap()
                     map.putString("url", item.url)
                     map.putString("name", item.name)
