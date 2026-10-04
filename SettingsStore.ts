@@ -9,6 +9,7 @@ export interface AppSettings {
   animationsEnabled: boolean;
   developerMode: boolean;
   language: AppLanguage;
+  dynamicTheme: boolean;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   animationsEnabled: true,
   developerMode: false,
   language: 'en',
+  dynamicTheme: false,
 };
 
 export async function loadSettings(): Promise<AppSettings> {

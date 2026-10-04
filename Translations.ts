@@ -28,6 +28,8 @@ export interface Strings {
   animationsDesc: string;
   languageLabel: string;
   languageDesc: string;
+  dynamicTheme: string;
+  dynamicThemeDesc: string;
   resetAllData: string;
   resetAllDataDesc: string;
   resetButton: string;
@@ -86,6 +88,8 @@ const en: Strings = {
   animationsDesc: 'Enable smooth transitions and animations throughout the app',
   languageLabel: 'Language',
   languageDesc: 'App display language',
+  dynamicTheme: 'Dynamic theme',
+  dynamicThemeDesc: 'Color the app using the current song\'s album art',
   resetAllData: 'Reset all data',
   resetAllDataDesc: 'Delete all playlists, liked songs, downloads, and settings',
   resetButton: 'Reset',
@@ -116,9 +120,6 @@ const en: Strings = {
   songsCount: n => `${n} ${n === 1 ? 'song' : 'songs'}`,
 };
 
-// Ukrainian noun pluralization after a number follows the standard
-// Slavic 1 / 2-4 / 5+ pattern (with teens as an exception), e.g.
-// 1 пісня, 2 пісні, 5 пісень, 21 пісня, 12 пісень.
 function ukrainianSongsCount(n: number): string {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -162,6 +163,8 @@ const uk: Strings = {
   animationsDesc: 'Увімкнути плавні переходи та анімації в усьому додатку',
   languageLabel: 'Мова',
   languageDesc: 'Мова інтерфейсу додатку',
+  dynamicTheme: 'Динамічна тема',
+  dynamicThemeDesc: 'Фарбувати додаток кольорами обкладинки поточної пісні',
   resetAllData: 'Скинути всі дані',
   resetAllDataDesc: 'Видалити всі плейлисти, улюблені пісні, завантаження та налаштування',
   resetButton: 'Скинути',

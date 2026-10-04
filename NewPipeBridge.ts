@@ -31,3 +31,9 @@ export async function getStreamUrl(
 ): Promise<StreamResult> {
   return NewPipeExtractorModule.getStreamUrl(videoUrl, quality);
 }
+
+// Returns up to 3 hex color strings, ranked by how much of the thumbnail's
+// area each color covers (index 0 = most space).
+export async function extractPalette(imageUrl: string): Promise<string[]> {
+  return NewPipeExtractorModule.extractPalette(imageUrl);
+}

@@ -1,5 +1,8 @@
 package com.snowifymobile
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.palette.graphics.Palette
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -10,6 +13,8 @@ import com.facebook.react.bridge.WritableMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
@@ -153,6 +158,60 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                 promise.resolve(result)
             } catch (e: Exception) {
                 promise.reject("STREAM_ERROR", e.message, e)
+            }
+        }
+    }
+
+    // Extracts the dominant colors from a track's thumbnail image, sorted
+    // by "population" (how much of the image's area each color actually
+    // covers) - so index 0 is genuinely the color that takes up the most
+    // space. Used to build a 3-tier dynamic theme: index 0 for the whole
+    // app's background, index 1 for medium UI chrome like the mini player,
+    // index 2 as a small accent color for buttons/text. Always resolves
+    // with up to 3 hex strings, or an empty array if the image had too
+    // few distinct colors to extract anything useful from.
+    @ReactMethod
+    fun extractPalette(imageUrl: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder().url(imageUrl).build()
+                val response = client.newCall(request).execute()
+
+                if (!response.isSuccessful) {
+                    promise.reject("PALETTE_ERROR", "Failed to fetch image: ${response.code}")
+                    return@launch
+                }
+
+                val bytes = response.body?.bytes()
+                if (bytes == null || bytes.isEmpty()) {
+                    promise.reject("PALETTE_ERROR", "Empty image response")
+                    return@launch
+                }
+
+                val bitmap: Bitmap? = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    promise.reject("PALETTE_ERROR", "Could not decode image")
+                    return@launch
+                }
+
+                val palette = Palette.from(bitmap).generate()
+                val sorted = palette.swatches.sortedByDescending { it.population }
+
+                val results: WritableArray = Arguments.createArray()
+                if (sorted.isEmpty()) {
+                    promise.resolve(results)
+                    return@launch
+                }
+
+                for (i in 0 until 3) {
+                    val swatch = sorted[if (i < sorted.size) i else sorted.size - 1]
+                    results.pushString(String.format("#%06X", 0xFFFFFF and swatch.rgb))
+                }
+
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("PALETTE_ERROR", e.message, e)
             }
         }
     }
