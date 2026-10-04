@@ -97,6 +97,8 @@ const TAB_BAR_FALLBACK_HEIGHT = 70;
 // normal fixed color instead.
 const MAX_BG_BRIGHTNESS = 140;
 
+const AnimatedSafeAreaView = Animated.createAnimatedComponent(SafeAreaView);
+
 let playerSetupDone = false;
 
 async function setupPlayer() {
@@ -147,6 +149,40 @@ function shuffledOrder(length: number, frontIndex: number): number[] {
   return indices;
 }
 
+// Smoothly fades a style color from whatever it was to `targetColor`
+// whenever `targetColor` changes, using core Animated's built-in color
+// interpolation (it auto-detects color strings in an interpolate()
+// outputRange). This must run with useNativeDriver: false since color
+// interpolation is JS-driven, not native-driver-eligible - fine here since
+// it only fires on song changes, not continuously. Returns an
+// AnimatedInterpolation that can be dropped straight into a style prop on
+// Animated.View / Animated.Text (NOT a plain View/Text, and not a
+// non-style prop like an icon's `color`).
+function useAnimatedColor(targetColor: string, duration = 450) {
+  const progress = useRef(new Animated.Value(1)).current;
+  const fromColorRef = useRef(targetColor);
+  const toColorRef = useRef(targetColor);
+  const [, bump] = useState(0);
+
+  useEffect(() => {
+    if (targetColor === toColorRef.current) return;
+    fromColorRef.current = toColorRef.current;
+    toColorRef.current = targetColor;
+    bump(n => n + 1);
+    progress.setValue(0);
+    Animated.timing(progress, {
+      toValue: 1,
+      duration,
+      useNativeDriver: false,
+    }).start();
+  }, [targetColor, duration, progress]);
+
+  return progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [fromColorRef.current, toColorRef.current],
+  });
+}
+
 function DraggableBar({
   value,
   onChange,
@@ -158,7 +194,7 @@ function DraggableBar({
   onChange: (v: number) => void;
   height?: number;
   commitOnRelease?: boolean;
-  fillColor?: string | null;
+  fillColor?: string;
 }) {
   const wrapperRef = useRef<View>(null);
   const [dragging, setDragging] = useState(false);
@@ -367,7 +403,7 @@ function SettingsSection({
   children,
 }: {
   title: string;
-  titleColor?: string | null;
+  titleColor?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -543,6 +579,16 @@ function AppContent() {
   const dynamicPlayer =
     palette && palette[1] && isColorDarkEnough(palette[1]) ? palette[1] : null;
   const dynamicAccent = palette && palette[2] ? palette[2] : null;
+
+  const resolvedBg = dynamicBg ?? BG;
+  const resolvedPlayer = dynamicPlayer ?? CARD;
+  const resolvedAccent = dynamicAccent ?? ACCENT;
+
+  // Smooth cross-fades for the few elements that get full Animated-color
+  // treatment (see the file-level note on useAnimatedColor for scope).
+  const animatedBg = useAnimatedColor(resolvedBg);
+  const animatedPlayerColor = useAnimatedColor(resolvedPlayer);
+  const animatedAccentColor = useAnimatedColor(resolvedAccent);
 
   const goNextRef = useRef<() => void>(() => {});
 
@@ -1019,7 +1065,7 @@ function AppContent() {
           </Text>
         </View>
         {loadingTrack === item.url ? (
-          <ActivityIndicator color={dynamicAccent ?? ACCENT} size="small" />
+          <ActivityIndicator color={resolvedAccent} size="small" />
         ) : (
           <View style={styles.rowActions}>
             <AnimatedHeart
@@ -1033,7 +1079,7 @@ function AppContent() {
             >
               <MoreVertical
                 size={18}
-                color={isDownloaded(item.url) ? (dynamicAccent ?? ACCENT) : TEXT_DIM}
+                color={isDownloaded(item.url) ? resolvedAccent : TEXT_DIM}
               />
             </TouchableOpacity>
           </View>
@@ -1046,8 +1092,8 @@ function AppContent() {
     tabBarHeight + (nowPlaying ? (playerExpanded ? 150 : 64) : 10);
 
   return (
-    <SafeAreaView
-      style={[styles.safeArea, dynamicBg ? { backgroundColor: dynamicBg } : null]}
+    <AnimatedSafeAreaView
+      style={[styles.safeArea, { backgroundColor: animatedBg }]}
       edges={['top', 'left', 'right']}
     >
       <StatusBar barStyle="light-content" />
@@ -1056,9 +1102,9 @@ function AppContent() {
         {view === 'search' && (
           <>
             <View style={styles.header}>
-              <Text style={[styles.headerTitle, dynamicAccent ? { color: dynamicAccent } : null]}>
+              <Animated.Text style={[styles.headerTitle, { color: animatedAccentColor }]}>
                 {t.appTitle}
-              </Text>
+              </Animated.Text>
             </View>
 
             <View style={styles.searchContainer}>
@@ -1072,7 +1118,7 @@ function AppContent() {
             </View>
 
             {searching && (
-              <ActivityIndicator style={styles.loadingIndicator} color={dynamicAccent ?? ACCENT} />
+              <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
             )}
 
             {searchError && <Text style={styles.errorText}>{searchError}</Text>}
@@ -1099,14 +1145,14 @@ function AppContent() {
         {view === 'library' && (
           <>
             <View style={styles.header}>
-              <Text style={[styles.headerTitle, dynamicAccent ? { color: dynamicAccent } : null]}>
+              <Animated.Text style={[styles.headerTitle, { color: animatedAccentColor }]}>
                 {t.yourLibrary}
-              </Text>
+              </Animated.Text>
             </View>
             <View style={styles.libraryHeaderRow}>
               <Text style={styles.libraryHeaderLabel}>{t.playlistsLabel}</Text>
               <TouchableOpacity onPress={() => setNewPlaylistModalVisible(true)}>
-                <Text style={[styles.libraryAddButton, dynamicAccent ? { color: dynamicAccent } : null]}>
+                <Text style={[styles.libraryAddButton, { color: resolvedAccent }]}>
                   {t.newButton}
                 </Text>
               </TouchableOpacity>
@@ -1138,12 +1184,7 @@ function AppContent() {
                     style={styles.playlistRow}
                     onPress={() => openPlaylistView('downloaded')}
                   >
-                    <View
-                      style={[
-                        styles.downloadedIcon,
-                        dynamicAccent ? { backgroundColor: dynamicAccent } : null,
-                      ]}
-                    >
+                    <View style={[styles.downloadedIcon, { backgroundColor: resolvedAccent }]}>
                       <Download size={20} color="#FFFFFF" />
                     </View>
                     <View style={styles.trackInfo}>
@@ -1161,7 +1202,7 @@ function AppContent() {
                   onPress={() => openPlaylistView(item.id)}
                 >
                   <View style={styles.playlistIcon}>
-                    <Music size={20} color={dynamicAccent ?? ACCENT} />
+                    <Music size={20} color={resolvedAccent} />
                   </View>
                   <View style={styles.trackInfo}>
                     <Text style={styles.trackTitle}>{item.name}</Text>
@@ -1205,9 +1246,9 @@ function AppContent() {
         {view === 'settings' && (
           <>
             <View style={styles.header}>
-              <Text style={[styles.headerTitle, dynamicAccent ? { color: dynamicAccent } : null]}>
+              <Animated.Text style={[styles.headerTitle, { color: animatedAccentColor }]}>
                 {t.settingsTitle}
-              </Text>
+              </Animated.Text>
             </View>
             <ScrollView
               contentContainerStyle={[
@@ -1215,7 +1256,7 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
             >
-              <SettingsSection title={t.sectionPlayback} titleColor={dynamicAccent}>
+              <SettingsSection title={t.sectionPlayback} titleColor={resolvedAccent}>
                 <SettingsRow
                   label={t.autoplay}
                   description={t.autoplayDesc}
@@ -1223,7 +1264,7 @@ function AppContent() {
                     <Switch
                       value={settings.autoplay}
                       onValueChange={v => updateSetting('autoplay', v)}
-                      trackColor={{ true: dynamicAccent ?? ACCENT, false: BORDER }}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />
                   }
@@ -1249,7 +1290,7 @@ function AppContent() {
                 />
               </SettingsSection>
 
-              <SettingsSection title={t.sectionAppearance} titleColor={dynamicAccent}>
+              <SettingsSection title={t.sectionAppearance} titleColor={resolvedAccent}>
                 <SettingsRow
                   label={t.animations}
                   description={t.animationsDesc}
@@ -1257,7 +1298,7 @@ function AppContent() {
                     <Switch
                       value={settings.animationsEnabled}
                       onValueChange={v => updateSetting('animationsEnabled', v)}
-                      trackColor={{ true: dynamicAccent ?? ACCENT, false: BORDER }}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />
                   }
@@ -1291,7 +1332,7 @@ function AppContent() {
                 />
               </SettingsSection>
 
-              <SettingsSection title={t.sectionData} titleColor={dynamicAccent}>
+              <SettingsSection title={t.sectionData} titleColor={resolvedAccent}>
                 <SettingsRow
                   label={t.resetAllData}
                   description={t.resetAllDataDesc}
@@ -1306,11 +1347,11 @@ function AppContent() {
                 />
               </SettingsSection>
 
-              <SettingsSection title={t.sectionAbout} titleColor={dynamicAccent}>
+              <SettingsSection title={t.sectionAbout} titleColor={resolvedAccent}>
                 <SettingsRow label={t.version} description="v0.1.0" control={<View />} />
               </SettingsSection>
 
-              <SettingsSection title={t.sectionDeveloper} titleColor={dynamicAccent}>
+              <SettingsSection title={t.sectionDeveloper} titleColor={resolvedAccent}>
                 <SettingsRow
                   label={t.developerMode}
                   description={t.developerModeDesc}
@@ -1318,7 +1359,7 @@ function AppContent() {
                     <Switch
                       value={settings.developerMode}
                       onValueChange={v => updateSetting('developerMode', v)}
-                      trackColor={{ true: dynamicAccent ?? ACCENT, false: BORDER }}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />
                   }
@@ -1326,7 +1367,7 @@ function AppContent() {
               </SettingsSection>
 
               {settings.developerMode && (
-                <SettingsSection title={t.sectionDebugLogs} titleColor={dynamicAccent}>
+                <SettingsSection title={t.sectionDebugLogs} titleColor={resolvedAccent}>
                   <View style={styles.debugLogsButtonRow}>
                     <TouchableOpacity
                       style={styles.settingsSecondaryButton}
@@ -1356,12 +1397,12 @@ function AppContent() {
       </Animated.View>
 
       {nowPlaying && (
-        <View
+        <Animated.View
           style={[
             styles.miniPlayer,
             { bottom: tabBarHeight },
             !playerExpanded && styles.miniPlayerCollapsedPadding,
-            dynamicPlayer ? { backgroundColor: dynamicPlayer } : null,
+            { backgroundColor: animatedPlayerColor },
           ]}
         >
           {playerExpanded && (
@@ -1376,7 +1417,7 @@ function AppContent() {
                   onChange={handleSeek}
                   height={3}
                   commitOnRelease
-                  fillColor={dynamicAccent}
+                  fillColor={resolvedAccent}
                 />
               </View>
 
@@ -1397,9 +1438,12 @@ function AppContent() {
               <View style={styles.miniPlayerArt} />
             )}
             <View style={styles.miniPlayerInfo}>
-              <Text style={styles.miniPlayerTitle} numberOfLines={1}>
+              <Animated.Text
+                style={[styles.miniPlayerTitle, { color: animatedAccentColor }]}
+                numberOfLines={1}
+              >
                 {nowPlaying.name}
-              </Text>
+              </Animated.Text>
               <Text style={styles.miniPlayerArtist} numberOfLines={1}>
                 YouTube
               </Text>
@@ -1440,7 +1484,7 @@ function AppContent() {
             <>
               <View style={styles.transportRow}>
                 <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
-                  <Shuffle size={18} color={shuffleOn ? (dynamicAccent ?? ACCENT) : '#FFFFFF'} />
+                  <Shuffle size={18} color={shuffleOn ? resolvedAccent : '#FFFFFF'} />
                 </TouchableOpacity>
 
                 <TouchableOpacity hitSlop={10} onPress={goPrevious}>
@@ -1461,11 +1505,11 @@ function AppContent() {
 
                 <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
                   {repeatMode === 'one' ? (
-                    <Repeat1 size={18} color={dynamicAccent ?? ACCENT} />
+                    <Repeat1 size={18} color={resolvedAccent} />
                   ) : (
                     <Repeat
                       size={18}
-                      color={repeatMode === 'all' ? (dynamicAccent ?? ACCENT) : '#FFFFFF'}
+                      color={repeatMode === 'all' ? resolvedAccent : '#FFFFFF'}
                     />
                   )}
                 </TouchableOpacity>
@@ -1478,34 +1522,31 @@ function AppContent() {
                     value={volume}
                     onChange={setVolume}
                     height={3}
-                    fillColor={dynamicAccent}
+                    fillColor={resolvedAccent}
                   />
                 </View>
               </View>
             </>
           )}
-        </View>
+        </Animated.View>
       )}
 
-      <View
-        style={[
-          styles.tabBar,
-          dynamicPlayer ? { backgroundColor: dynamicPlayer } : null,
-        ]}
+      <Animated.View
+        style={[styles.tabBar, { backgroundColor: animatedPlayerColor }]}
         onLayout={e => setTabBarHeight(e.nativeEvent.layout.height)}
       >
         <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
           <TouchableOpacity style={styles.tabButton} onPress={() => changeView('search')}>
-            <Search size={20} color={view === 'search' ? (dynamicAccent ?? ACCENT) : TEXT_DIM} />
-            <Text
+            <Search size={20} color={view === 'search' ? resolvedAccent : TEXT_DIM} />
+            <Animated.Text
               style={[
                 styles.tabLabel,
                 view === 'search' && styles.tabLabelActive,
-                view === 'search' && dynamicAccent ? { color: dynamicAccent } : null,
+                view === 'search' ? { color: animatedAccentColor } : null,
               ]}
             >
               {t.tabSearch}
-            </Text>
+            </Animated.Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.tabButton}
@@ -1513,23 +1554,19 @@ function AppContent() {
           >
             <Library
               size={20}
-              color={
-                view === 'library' || view === 'playlist'
-                  ? (dynamicAccent ?? ACCENT)
-                  : TEXT_DIM
-              }
+              color={view === 'library' || view === 'playlist' ? resolvedAccent : TEXT_DIM}
             />
-            <Text
+            <Animated.Text
               style={[
                 styles.tabLabel,
                 (view === 'library' || view === 'playlist') && styles.tabLabelActive,
-                (view === 'library' || view === 'playlist') && dynamicAccent
-                  ? { color: dynamicAccent }
+                view === 'library' || view === 'playlist'
+                  ? { color: animatedAccentColor }
                   : null,
               ]}
             >
               {t.tabLibrary}
-            </Text>
+            </Animated.Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.tabButton}
@@ -1537,20 +1574,20 @@ function AppContent() {
           >
             <SettingsIcon
               size={20}
-              color={view === 'settings' ? (dynamicAccent ?? ACCENT) : TEXT_DIM}
+              color={view === 'settings' ? resolvedAccent : TEXT_DIM}
             />
-            <Text
+            <Animated.Text
               style={[
                 styles.tabLabel,
                 view === 'settings' && styles.tabLabelActive,
-                view === 'settings' && dynamicAccent ? { color: dynamicAccent } : null,
+                view === 'settings' ? { color: animatedAccentColor } : null,
               ]}
             >
               {t.tabSettings}
-            </Text>
+            </Animated.Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
 
       <Modal
         visible={!!addToPlaylistTarget}
@@ -1579,13 +1616,13 @@ function AppContent() {
             >
               {addToPlaylistTarget &&
               downloadingUrls.has(addToPlaylistTarget.url) ? (
-                <ActivityIndicator size="small" color={dynamicAccent ?? ACCENT} />
+                <ActivityIndicator size="small" color={resolvedAccent} />
               ) : (
                 <Download
                   size={18}
                   color={
                     addToPlaylistTarget && isDownloaded(addToPlaylistTarget.url)
-                      ? (dynamicAccent ?? ACCENT)
+                      ? resolvedAccent
                       : '#FFFFFF'
                   }
                 />
@@ -1622,7 +1659,7 @@ function AppContent() {
               style={styles.modalNewPlaylistRow}
               onPress={() => setNewPlaylistModalVisible(true)}
             >
-              <Text style={[styles.modalNewPlaylistText, dynamicAccent ? { color: dynamicAccent } : null]}>
+              <Text style={[styles.modalNewPlaylistText, { color: resolvedAccent }]}>
                 {t.newPlaylistButton}
               </Text>
             </TouchableOpacity>
@@ -1663,7 +1700,7 @@ function AppContent() {
                 <Text style={styles.modalCancelText}>{t.cancel}</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalOkButton, dynamicAccent ? { backgroundColor: dynamicAccent } : null]}
+                style={[styles.modalOkButton, { backgroundColor: resolvedAccent }]}
                 onPress={handleCreatePlaylist}
               >
                 <Text style={styles.modalOkText}>{t.createButton}</Text>
@@ -1672,7 +1709,7 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </AnimatedSafeAreaView>
   );
 }
 
