@@ -96,6 +96,14 @@ const TAB_BAR_FALLBACK_HEIGHT = 70;
 // unreadable - in that case the affected tier just falls back to its
 // normal fixed color instead.
 const MAX_BG_BRIGHTNESS = 140;
+// Lightness band (HSL, 0-1) the accent color gets clamped into. The accent
+// is used as TEXT and ICON color drawn on top of the dark background/player
+// tiers, so unlike those two it must never be allowed to go very dark -
+// album art that's naturally dark and monochrome can otherwise produce an
+// accent nearly identical to the background it sits on.
+const ACCENT_MIN_LIGHTNESS = 0.5;
+const ACCENT_MAX_LIGHTNESS = 0.78;
+const ACCENT_MIN_SATURATION = 0.35;
 
 const AnimatedSafeAreaView = Animated.createAnimatedComponent(SafeAreaView);
 
@@ -131,6 +139,71 @@ function isColorDarkEnough(hex: string): boolean {
   const b = parseInt(hex.slice(5, 7), 16);
   const brightness = (r * 299 + g * 587 + b * 114) / 1000;
   return brightness < MAX_BG_BRIGHTNESS;
+}
+
+function hexToHsl(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === r) {
+      h = ((g - b) / d) % 6;
+    } else if (max === g) {
+      h = (b - r) / d + 2;
+    } else {
+      h = (r - g) / d + 4;
+    }
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, s, l];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) {
+    r = c; g = x; b = 0;
+  } else if (h < 120) {
+    r = x; g = c; b = 0;
+  } else if (h < 180) {
+    r = 0; g = c; b = x;
+  } else if (h < 240) {
+    r = 0; g = x; b = c;
+  } else if (h < 300) {
+    r = x; g = 0; b = c;
+  } else {
+    r = c; g = 0; b = x;
+  }
+  const toHex = (v: number) => {
+    const n = Math.round((v + m) * 255);
+    return Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+  };
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+}
+
+// Keeps an accent color's hue (so it still reads as "from this album art")
+// but clamps its lightness/saturation into a legible range, since a color
+// extracted straight from the image's palette can be nearly as dark as the
+// background it's drawn on top of - making accent-colored text and icons
+// effectively invisible.
+function normalizeAccentColor(hex: string): string {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex;
+  const [h, s, l] = hexToHsl(hex);
+  const clampedL = Math.min(ACCENT_MAX_LIGHTNESS, Math.max(ACCENT_MIN_LIGHTNESS, l));
+  const clampedS = Math.max(ACCENT_MIN_SATURATION, s);
+  return hslToHex(h, clampedS, clampedL);
 }
 
 function shuffledOrder(length: number, frontIndex: number): number[] {
@@ -578,7 +651,8 @@ function AppContent() {
     palette && palette[0] && isColorDarkEnough(palette[0]) ? palette[0] : null;
   const dynamicPlayer =
     palette && palette[1] && isColorDarkEnough(palette[1]) ? palette[1] : null;
-  const dynamicAccent = palette && palette[2] ? palette[2] : null;
+  const dynamicAccent =
+    palette && palette[2] ? normalizeAccentColor(palette[2]) : null;
 
   const resolvedBg = dynamicBg ?? BG;
   const resolvedPlayer = dynamicPlayer ?? CARD;
