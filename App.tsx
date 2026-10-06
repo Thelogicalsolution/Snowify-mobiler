@@ -27,6 +27,8 @@ import {
 } from 'react-native-safe-area-context';
 import Clipboard from '@react-native-clipboard/clipboard';
 import TrackPlayer, {
+  AppKilledPlaybackBehavior,
+  Capability,
   Event,
   RepeatMode,
   useIsPlaying,
@@ -78,6 +80,7 @@ import {
   saveDownloads,
 } from './DownloadStore';
 import { downloadTrackAudio, deleteDownloadedFile } from './DownloadManager';
+import { setPlaybackHandlers } from './PlaybackController';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -121,6 +124,26 @@ async function setupPlayer() {
     contentType: 'music',
     handleAudioBecomingNoisy: true,
     android: { wakeMode: 'network' },
+  });
+  await TrackPlayer.updateOptions({
+    capabilities: [
+      Capability.Play,
+      Capability.Pause,
+      Capability.SkipToNext,
+      Capability.SkipToPrevious,
+      Capability.SeekTo,
+      Capability.Stop,
+    ],
+    notificationCapabilities: [
+      Capability.Play,
+      Capability.Pause,
+      Capability.SkipToNext,
+      Capability.SkipToPrevious,
+    ],
+    compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
+    android: {
+      appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
+    },
   });
   playerSetupDone = true;
 }
@@ -539,17 +562,16 @@ function AppContent() {
   const [storeLoaded, setStoreLoaded] = useState(false);
   const [likedSongs, setLikedSongs] = useState<Track[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [viewingPlaylist, setViewingPlaylist] = useState<{
-    id: string;
-    name: string;
-    tracks: Track[];
-  } | null>(null);
+  const [viewingPlaylistId, setViewingPlaylistId] = useState<string | null>(null);
 
   const [addToPlaylistTarget, setAddToPlaylistTarget] =
     useState<Track | null>(null);
   const [newPlaylistModalVisible, setNewPlaylistModalVisible] =
     useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [playlistActionsTarget, setPlaylistActionsTarget] = useState<Playlist | null>(null);
+  const [renamePlaylistTarget, setRenamePlaylistTarget] = useState<Playlist | null>(null);
+  const [renamePlaylistNameInput, setRenamePlaylistNameInput] = useState('');
 
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -709,7 +731,45 @@ function AppContent() {
   const animatedPlayerColor = useAnimatedColor(resolvedPlayer);
   const animatedAccentColor = useAnimatedColor(resolvedAccent);
 
+  // Live-derived name/tracks for whichever playlist is currently open, so
+  // renaming or removing a track reflects immediately without needing to
+  // re-open the screen. 'liked' and 'downloaded' are virtual playlists.
+  const viewingPlaylistName =
+    viewingPlaylistId === 'liked'
+      ? t.likedSongs
+      : viewingPlaylistId === 'downloaded'
+      ? t.downloaded
+      : playlists.find(p => p.id === viewingPlaylistId)?.name ?? '';
+
+  const viewingPlaylistTracks: Track[] =
+    viewingPlaylistId === 'liked'
+      ? likedSongs
+      : viewingPlaylistId === 'downloaded'
+      ? downloads.map(d => ({ url: d.url, name: d.name, thumbnailUrl: d.thumbnailUrl }))
+      : playlists.find(p => p.id === viewingPlaylistId)?.tracks ?? [];
+
+  // Only real user playlists (not the virtual Liked/Downloaded ones) can
+  // have a track removed from them.
+  const removablePlaylistId =
+    view === 'playlist' &&
+    viewingPlaylistId &&
+    viewingPlaylistId !== 'liked' &&
+    viewingPlaylistId !== 'downloaded'
+      ? viewingPlaylistId
+      : null;
+
   const goNextRef = useRef<() => void>(() => {});
+  const goPreviousRef = useRef<() => void>(() => {});
+
+  // Registered once so the lock screen's skip buttons (handled in
+  // service.js, outside the React tree) can reach the latest goNext/
+  // goPrevious via these stable refs.
+  useEffect(() => {
+    setPlaybackHandlers({
+      next: () => goNextRef.current(),
+      previous: () => goPreviousRef.current(),
+    });
+  }, []);
 
   // Diagnostic only: @rntp/player has not been observed to emit
   // PlaybackQueueEnded in testing, so this no longer drives
@@ -916,6 +976,19 @@ function AppContent() {
     setAddToPlaylistTarget(null);
   }
 
+  function handleRemoveFromPlaylist(playlistId: string, trackUrl: string) {
+    const pl = playlists.find(p => p.id === playlistId);
+    logDebug(`Removed track from playlist "${pl?.name ?? playlistId}"`);
+    setPlaylists(prev =>
+      prev.map(p =>
+        p.id === playlistId
+          ? { ...p, tracks: p.tracks.filter(tr => tr.url !== trackUrl) }
+          : p,
+      ),
+    );
+    setAddToPlaylistTarget(null);
+  }
+
   function handleCreatePlaylist() {
     const name = newPlaylistName.trim() || t.myPlaylist;
     const id = makePlaylistId();
@@ -927,27 +1000,45 @@ function AppContent() {
     setNewPlaylistName('');
   }
 
+  function handleRenamePlaylist() {
+    if (!renamePlaylistTarget) return;
+    const name = renamePlaylistNameInput.trim() || renamePlaylistTarget.name;
+    logDebug(`Renamed playlist "${renamePlaylistTarget.name}" -> "${name}"`);
+    setPlaylists(prev =>
+      prev.map(p => (p.id === renamePlaylistTarget.id ? { ...p, name } : p)),
+    );
+    setRenamePlaylistTarget(null);
+    setRenamePlaylistNameInput('');
+  }
+
+  function handleDeletePlaylist(playlist: Playlist) {
+    Alert.alert(t.deletePlaylistTitle, t.deletePlaylistMessage(playlist.name), [
+      { text: t.cancel, style: 'cancel' },
+      {
+        text: t.deleteButton,
+        style: 'destructive',
+        onPress: () => {
+          logDebug(`Deleted playlist "${playlist.name}"`);
+          setPlaylists(prev => prev.filter(p => p.id !== playlist.id));
+          if (viewingPlaylistId === playlist.id) {
+            setViewingPlaylistId(null);
+            changeView('library');
+          }
+          setPlaylistActionsTarget(null);
+        },
+      },
+    ]);
+  }
+
   function openPlaylistView(id: 'liked' | 'downloaded' | string) {
-    if (id === 'liked') {
-      logDebug('Opened playlist: Liked Songs');
-      setViewingPlaylist({ id: 'liked', name: t.likedSongs, tracks: likedSongs });
-    } else if (id === 'downloaded') {
-      logDebug('Opened playlist: Downloaded');
-      setViewingPlaylist({
-        id: 'downloaded',
-        name: t.downloaded,
-        tracks: downloads.map(d => ({
-          url: d.url,
-          name: d.name,
-          thumbnailUrl: d.thumbnailUrl,
-        })),
-      });
-    } else {
-      const pl = playlists.find(p => p.id === id);
-      if (!pl) return;
-      logDebug(`Opened playlist: ${pl.name}`);
-      setViewingPlaylist({ id: pl.id, name: pl.name, tracks: pl.tracks });
-    }
+    const name =
+      id === 'liked'
+        ? t.likedSongs
+        : id === 'downloaded'
+        ? t.downloaded
+        : playlists.find(p => p.id === id)?.name ?? id;
+    logDebug(`Opened playlist: ${name}`);
+    setViewingPlaylistId(id);
     changeView('playlist');
   }
 
@@ -1068,6 +1159,7 @@ function AppContent() {
   }
 
   goNextRef.current = goNext;
+  goPreviousRef.current = goPrevious;
 
   function toggleShuffle() {
     setShuffleOn(on => {
@@ -1316,44 +1408,52 @@ function AppContent() {
                 </>
               }
               renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.playlistRow}
-                  onPress={() => openPlaylistView(item.id)}
-                >
-                  <View style={styles.playlistIcon}>
-                    <Music size={20} color={resolvedAccent} />
-                  </View>
-                  <View style={styles.trackInfo}>
-                    <Text style={styles.trackTitle}>{item.name}</Text>
-                    <Text style={styles.playlistSubtitle}>
-                      {t.songsCount(item.tracks.length)}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
+                <View style={styles.playlistRow}>
+                  <TouchableOpacity
+                    style={styles.playlistRowMain}
+                    onPress={() => openPlaylistView(item.id)}
+                  >
+                    <View style={styles.playlistIcon}>
+                      <Music size={20} color={resolvedAccent} />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>{item.name}</Text>
+                      <Text style={styles.playlistSubtitle}>
+                        {t.songsCount(item.tracks.length)}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    hitSlop={10}
+                    onPress={() => setPlaylistActionsTarget(item)}
+                  >
+                    <MoreVertical size={18} color={TEXT_DIM} />
+                  </TouchableOpacity>
+                </View>
               )}
             />
           </>
         )}
 
-        {view === 'playlist' && viewingPlaylist && (
+        {view === 'playlist' && viewingPlaylistId && (
           <>
             <View style={styles.playlistDetailHeader}>
               <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
                 <ChevronLeft size={24} color="#FFFFFF" />
               </TouchableOpacity>
               <Text style={styles.playlistDetailTitle} numberOfLines={1}>
-                {viewingPlaylist.name}
+                {viewingPlaylistName}
               </Text>
             </View>
             <FlatList
-              data={viewingPlaylist.tracks}
+              data={viewingPlaylistTracks}
               keyExtractor={tr => tr.url}
               contentContainerStyle={[
                 styles.listContent,
                 { paddingBottom: bottomPad },
               ]}
               renderItem={({ item, index }) =>
-                renderTrackRow(item, index, viewingPlaylist.tracks)
+                renderTrackRow(item, index, viewingPlaylistTracks)
               }
               ListEmptyComponent={
                 <Text style={styles.emptyText}>{t.noSongsYet}</Text>
@@ -1755,6 +1855,19 @@ function AppContent() {
               </Text>
             </TouchableOpacity>
 
+            {removablePlaylistId && addToPlaylistTarget && (
+              <TouchableOpacity
+                style={styles.modalActionRow}
+                onPress={() =>
+                  handleRemoveFromPlaylist(removablePlaylistId, addToPlaylistTarget.url)
+                }
+              >
+                <Text style={[styles.modalActionText, { color: LIKE_RED }]}>
+                  {t.removeFromPlaylist}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <Text style={styles.modalSubheading}>{t.addToPlaylist}</Text>
             <ScrollView style={styles.modalScroll}>
               {playlists.length === 0 && (
@@ -1823,6 +1936,84 @@ function AppContent() {
                 onPress={handleCreatePlaylist}
               >
                 <Text style={styles.modalOkText}>{t.createButton}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={!!playlistActionsTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPlaylistActionsTarget(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t.playlistActionsTitle}</Text>
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (!playlistActionsTarget) return;
+                setRenamePlaylistTarget(playlistActionsTarget);
+                setRenamePlaylistNameInput(playlistActionsTarget.name);
+                setPlaylistActionsTarget(null);
+              }}
+            >
+              <Text style={styles.modalActionText}>{t.renamePlaylistTitle}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => playlistActionsTarget && handleDeletePlaylist(playlistActionsTarget)}
+            >
+              <Text style={[styles.modalActionText, { color: LIKE_RED }]}>
+                {t.deleteButton}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalCancelButton}
+              onPress={() => setPlaylistActionsTarget(null)}
+            >
+              <Text style={styles.modalCancelText}>{t.cancel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={!!renamePlaylistTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setRenamePlaylistTarget(null);
+          setRenamePlaylistNameInput('');
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t.renamePlaylistTitle}</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={renamePlaylistNameInput}
+              onChangeText={setRenamePlaylistNameInput}
+              placeholder={t.myPlaylist}
+              placeholderTextColor={TEXT_DIM}
+              autoFocus
+            />
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity
+                onPress={() => {
+                  setRenamePlaylistTarget(null);
+                  setRenamePlaylistNameInput('');
+                }}
+              >
+                <Text style={styles.modalCancelText}>{t.cancel}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalOkButton, { backgroundColor: resolvedAccent }]}
+                onPress={handleRenamePlaylist}
+              >
+                <Text style={styles.modalOkText}>{t.renameButton}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1897,6 +2088,11 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER,
+  },
+  playlistRowMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
   },
   likedSongsIcon: {
     width: 44,

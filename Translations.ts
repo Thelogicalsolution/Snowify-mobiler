@@ -57,6 +57,13 @@ export interface Strings {
   copiedTitle: string;
   copiedMessage: string;
   songsCount: (n: number) => string;
+  playlistActionsTitle: string;
+  renamePlaylistTitle: string;
+  renameButton: string;
+  deletePlaylistTitle: string;
+  deletePlaylistMessage: (name: string) => string;
+  deleteButton: string;
+  removeFromPlaylist: string;
 }
 
 const en: Strings = {
@@ -118,6 +125,13 @@ const en: Strings = {
   copiedTitle: 'Copied',
   copiedMessage: 'Debug logs copied to clipboard.',
   songsCount: n => `${n} ${n === 1 ? 'song' : 'songs'}`,
+  playlistActionsTitle: 'Playlist options',
+  renamePlaylistTitle: 'Rename playlist',
+  renameButton: 'Rename',
+  deletePlaylistTitle: 'Delete playlist?',
+  deletePlaylistMessage: name => `This will permanently delete "${name}".`,
+  deleteButton: 'Delete',
+  removeFromPlaylist: 'Remove from this playlist',
 };
 
 function ukrainianSongsCount(n: number): string {
@@ -193,6 +207,13 @@ const uk: Strings = {
   copiedTitle: 'Скопійовано',
   copiedMessage: 'Журнал налагодження скопійовано в буфер обміну.',
   songsCount: ukrainianSongsCount,
+  playlistActionsTitle: 'Опції плейлиста',
+  renamePlaylistTitle: 'Перейменувати плейлист',
+  renameButton: 'Перейменувати',
+  deletePlaylistTitle: 'Видалити плейлист?',
+  deletePlaylistMessage: name => `Це назавжди видалить "${name}".`,
+  deleteButton: 'Видалити',
+  removeFromPlaylist: 'Видалити з цього плейлиста',
 };
 
 export const STRINGS: Record<AppLanguage, Strings> = { en, uk };
