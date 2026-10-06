@@ -164,12 +164,13 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
 
     // Extracts the dominant colors from a track's thumbnail image, sorted
     // by "population" (how much of the image's area each color actually
-    // covers) - so index 0 is genuinely the color that takes up the most
-    // space. Used to build a 3-tier dynamic theme: index 0 for the whole
-    // app's background, index 1 for medium UI chrome like the mini player,
-    // index 2 as a small accent color for buttons/text. Always resolves
-    // with up to 3 hex strings, or an empty array if the image had too
-    // few distinct colors to extract anything useful from.
+    // covers). Returns up to 3 {color, share} entries - color is a hex
+    // string, share is that swatch's population as a fraction of the total
+    // population across all returned swatches (0-1), used on the JS side to
+    // weight how strongly a color should influence its UI tier (a color
+    // that's barely present should only tint faintly). Resolves with an
+    // empty array if the image had too few distinct colors to extract
+    // anything useful from.
     @ReactMethod
     fun extractPalette(imageUrl: String, promise: Promise) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -204,9 +205,15 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                     return@launch
                 }
 
+                val totalPopulation = sorted.sumOf { it.population }.toDouble().coerceAtLeast(1.0)
+
                 for (i in 0 until 3) {
                     val swatch = sorted[if (i < sorted.size) i else sorted.size - 1]
-                    results.pushString(String.format("#%06X", 0xFFFFFF and swatch.rgb))
+                    val share = swatch.population / totalPopulation
+                    val map: WritableMap = Arguments.createMap()
+                    map.putString("color", String.format("#%06X", 0xFFFFFF and swatch.rgb))
+                    map.putDouble("share", share)
+                    results.pushMap(map)
                 }
 
                 promise.resolve(results)

@@ -52,7 +52,7 @@ import {
   Settings as SettingsIcon,
   Download,
 } from 'lucide-react-native';
-import { searchVideos, getStreamUrl, extractPalette } from './NewPipeBridge';
+import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -90,12 +90,6 @@ const CARD = '#17171D';
 const BORDER = '#252530';
 const TEXT_DIM = '#8A8A9A';
 const TAB_BAR_FALLBACK_HEIGHT = 70;
-// Minimum acceptable perceived brightness (0-255, ITU-R BT.601 formula) for
-// a dynamic-theme background/player color. The app's text is white/light
-// gray throughout, so a color extracted from very light album art would be
-// unreadable - in that case the affected tier just falls back to its
-// normal fixed color instead.
-const MAX_BG_BRIGHTNESS = 140;
 // Lightness band (HSL, 0-1) the accent color gets clamped into. The accent
 // is used as TEXT and ICON color drawn on top of the dark background/player
 // tiers, so unlike those two it must never be allowed to go very dark -
@@ -104,6 +98,18 @@ const MAX_BG_BRIGHTNESS = 140;
 const ACCENT_MIN_LIGHTNESS = 0.5;
 const ACCENT_MAX_LIGHTNESS = 0.78;
 const ACCENT_MIN_SATURATION = 0.35;
+// How far the raw dominant color is mixed toward black before becoming the
+// whole-app background - matches desktop Snowify's Album Art Palette
+// plugin. Darkening (rather than rejecting light colors outright) keeps
+// bright/neon album art from flooding the app in a solid light wash, while
+// mathematically guaranteeing the result is always dark enough for the
+// app's white/light-gray text (worst case, pure white mixed 62% toward
+// black still lands under perceived-brightness ~97 of 255).
+const BG_DARKEN = 0.62;
+// How far the medium "panel" color (mini player + tab bar) is mixed toward
+// black before it's blended into the background - same idea as BG_DARKEN,
+// applied to the 2nd-ranked color.
+const PANEL_COLOR_DARKEN = 0.45;
 
 const AnimatedSafeAreaView = Animated.createAnimatedComponent(SafeAreaView);
 
@@ -132,13 +138,31 @@ function toPlayableUrl(path: string): string {
   return path.startsWith('file://') ? path : `file://${path}`;
 }
 
-function isColorDarkEnough(hex: string): boolean {
-  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return false;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-  return brightness < MAX_BG_BRIGHTNESS;
+function hexToRgb(hex: string): [number, number, number] {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${c(r)}${c(g)}${c(b)}`.toUpperCase();
+}
+
+// Blends `hex` toward `towardHex` by `amount` (0 = unchanged, 1 = fully
+// `towardHex`), in plain RGB space - same technique desktop's palette
+// plugin uses to darken colors before using them as backgrounds.
+function mixColor(hex: string, towardHex: string, amount: number): string {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex;
+  const [r, g, b] = hexToRgb(hex);
+  const [tr, tg, tb] = hexToRgb(towardHex);
+  return rgbToHex(r + (tr - r) * amount, g + (tg - g) * amount, b + (tb - b) * amount);
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
 }
 
 function hexToHsl(hex: string): [number, number, number] {
@@ -201,7 +225,7 @@ function hslToHex(h: number, s: number, l: number): string {
 function normalizeAccentColor(hex: string): string {
   if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex;
   const [h, s, l] = hexToHsl(hex);
-  const clampedL = Math.min(ACCENT_MAX_LIGHTNESS, Math.max(ACCENT_MIN_LIGHTNESS, l));
+  const clampedL = clamp(l, ACCENT_MIN_LIGHTNESS, ACCENT_MAX_LIGHTNESS);
   const clampedS = Math.max(ACCENT_MIN_SATURATION, s);
   return hslToHex(h, clampedS, clampedL);
 }
@@ -537,7 +561,7 @@ function AppContent() {
     new Set(),
   );
 
-  const [palette, setPalette] = useState<string[] | null>(null);
+  const [palette, setPalette] = useState<PaletteSwatch[] | null>(null);
 
   const t = STRINGS[settings.language];
 
@@ -616,10 +640,10 @@ function AppContent() {
     }
   }, [view, settings.developerMode]);
 
-  // Re-extracts the dynamic theme's 3 colors whenever the playing track
-  // changes (or the setting is toggled). Clears the palette entirely when
-  // the setting is off or there's no usable thumbnail, so every consumer
-  // of `palette` below naturally falls back to the fixed theme.
+  // Re-extracts the dynamic theme's palette whenever the playing track
+  // changes (or the setting is toggled). Clears it entirely when the
+  // setting is off or there's no usable thumbnail, so every consumer of
+  // `palette` below naturally falls back to the fixed theme.
   useEffect(() => {
     if (!settings.dynamicTheme || !nowPlaying?.thumbnailUrl) {
       setPalette(null);
@@ -627,11 +651,15 @@ function AppContent() {
     }
     let cancelled = false;
     extractPalette(nowPlaying.thumbnailUrl)
-      .then(colors => {
+      .then(swatches => {
         if (cancelled) return;
-        if (colors.length > 0) {
-          setPalette(colors);
-          logDebug(`Palette extracted: ${colors.join(', ')}`);
+        if (swatches.length > 0) {
+          setPalette(swatches);
+          logDebug(
+            `Palette extracted: ${swatches
+              .map(s => `${s.color}(${(s.share * 100).toFixed(0)}%)`)
+              .join(', ')}`,
+          );
         } else {
           setPalette(null);
           logDebug('Palette extraction returned no colors');
@@ -647,12 +675,29 @@ function AppContent() {
     };
   }, [nowPlaying?.url, settings.dynamicTheme]);
 
-  const dynamicBg =
-    palette && palette[0] && isColorDarkEnough(palette[0]) ? palette[0] : null;
-  const dynamicPlayer =
-    palette && palette[1] && isColorDarkEnough(palette[1]) ? palette[1] : null;
-  const dynamicAccent =
-    palette && palette[2] ? normalizeAccentColor(palette[2]) : null;
+  // Tier 1 - whole-app background: the dominant color, always darkened
+  // toward black (never used raw, never rejected) so it's guaranteed
+  // legible under white/light-gray text regardless of how light or
+  // saturated the original album art was.
+  const dynamicBg = palette?.[0]
+    ? mixColor(palette[0].color, '#000000', BG_DARKEN)
+    : null;
+
+  // Tier 2 - mini player + tab bar: blended FROM the background TOWARD a
+  // darkened version of the 2nd color, weighted by how much that color
+  // actually covers the art (share). A color that's a tiny sliver only
+  // tints the panel faintly; a color that dominates the art pulls the
+  // panel strongly toward it.
+  const dynamicPlayer = (() => {
+    if (!dynamicBg || !palette?.[1]) return null;
+    const intensity = clamp(palette[1].share * 2.4, 0.28, 1);
+    const panelDark = mixColor(palette[1].color, '#000000', PANEL_COLOR_DARKEN);
+    return mixColor(dynamicBg, panelDark, intensity);
+  })();
+
+  // Tier 3 - accent text/icons: the 3rd color, clamped to a legible
+  // lightness/saturation band regardless of its raw extracted value.
+  const dynamicAccent = palette?.[2] ? normalizeAccentColor(palette[2].color) : null;
 
   const resolvedBg = dynamicBg ?? BG;
   const resolvedPlayer = dynamicPlayer ?? CARD;
