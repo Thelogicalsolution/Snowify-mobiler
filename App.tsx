@@ -27,9 +27,8 @@ import {
 } from 'react-native-safe-area-context';
 import Clipboard from '@react-native-clipboard/clipboard';
 import TrackPlayer, {
-  AppKilledPlaybackBehavior,
-  Capability,
   Event,
+  PlayerCommand,
   RepeatMode,
   useIsPlaying,
   useProgress,
@@ -80,7 +79,6 @@ import {
   saveDownloads,
 } from './DownloadStore';
 import { downloadTrackAudio, deleteDownloadedFile } from './DownloadManager';
-import { setPlaybackHandlers } from './PlaybackController';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -118,34 +116,41 @@ const AnimatedSafeAreaView = Animated.createAnimatedComponent(SafeAreaView);
 
 let playerSetupDone = false;
 
-async function setupPlayer() {
+// In @rntp/player, setupPlayer() is synchronous (returns void). Setup is
+// marked done immediately so that a problem in the optional remote-control
+// configuration below can never block the volume/repeat-mode effects.
+function setupPlayer() {
   if (playerSetupDone) return;
-  await TrackPlayer.setupPlayer({
+  TrackPlayer.setupPlayer({
     contentType: 'music',
     handleAudioBecomingNoisy: true,
     android: { wakeMode: 'network' },
   });
-  await TrackPlayer.updateOptions({
-    capabilities: [
-      Capability.Play,
-      Capability.Pause,
-      Capability.SkipToNext,
-      Capability.SkipToPrevious,
-      Capability.SeekTo,
-      Capability.Stop,
-    ],
-    notificationCapabilities: [
-      Capability.Play,
-      Capability.Pause,
-      Capability.SkipToNext,
-      Capability.SkipToPrevious,
-    ],
-    compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
-    android: {
-      appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
-    },
-  });
   playerSetupDone = true;
+
+  // Lock screen / notification controls. Play/pause and seeking are handled
+  // natively. Next/Previous are routed to JS (see the Event.RemoteNext and
+  // Event.RemotePrevious listeners in AppContent) because the native queue
+  // only ever holds the one currently-playing track - the real queue lives
+  // in React state.
+  try {
+    TrackPlayer.setCommands({
+      capabilities: [
+        PlayerCommand.PlayPause,
+        PlayerCommand.Next,
+        PlayerCommand.Previous,
+        PlayerCommand.Seek,
+      ],
+      handling: 'hybrid',
+      perCommandHandling: {
+        [PlayerCommand.Next]: 'js',
+        [PlayerCommand.Previous]: 'js',
+      },
+    });
+    logDebug('Remote controls configured (hybrid: next/previous handled in JS)');
+  } catch (e: any) {
+    logDebug(`setCommands failed: ${e?.message ?? e}`);
+  }
 }
 
 function formatTime(seconds: number): string {
@@ -594,13 +599,14 @@ function AppContent() {
 
   useEffect(() => {
     logDebug('App started');
-    setupPlayer()
-      .then(() => logDebug('Player initialized'))
-      .catch(error => {
-        const msg = error?.message ?? 'Audio player failed to initialize';
-        setSearchError(msg);
-        logDebug(`Player init failed: ${msg}`);
-      });
+    try {
+      setupPlayer();
+      logDebug('Player initialized');
+    } catch (error: any) {
+      const msg = error?.message ?? 'Audio player failed to initialize';
+      setSearchError(msg);
+      logDebug(`Player init failed: ${msg}`);
+    }
   }, []);
 
   useEffect(() => {
@@ -761,24 +767,24 @@ function AppContent() {
   const goNextRef = useRef<() => void>(() => {});
   const goPreviousRef = useRef<() => void>(() => {});
 
-  // Registered once so the lock screen's skip buttons (handled in
-  // service.js, outside the React tree) can reach the latest goNext/
-  // goPrevious via these stable refs.
+  // Lock screen / notification Next and Previous. These only fire because
+  // setupPlayer() configures those two commands as 'js' (hybrid handling);
+  // everything else on the lock screen is handled natively. The refs always
+  // point at the latest goNext/goPrevious, so this only needs registering
+  // once.
   useEffect(() => {
-    setPlaybackHandlers({
-      next: () => goNextRef.current(),
-      previous: () => goPreviousRef.current(),
+    const nextSub = TrackPlayer.addEventListener(Event.RemoteNext, () => {
+      logDebug('Remote next pressed (lock screen/notification)');
+      goNextRef.current();
     });
-  }, []);
-
-  // Diagnostic only: @rntp/player has not been observed to emit
-  // PlaybackQueueEnded in testing, so this no longer drives
-  // autoplay/repeat-all - see the progress-based detector below instead.
-  useEffect(() => {
-    const sub = TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
-      logDebug('(diagnostic) PlaybackQueueEnded fired');
+    const prevSub = TrackPlayer.addEventListener(Event.RemotePrevious, () => {
+      logDebug('Remote previous pressed (lock screen/notification)');
+      goPreviousRef.current();
     });
-    return () => sub.remove();
+    return () => {
+      nextSub.remove();
+      prevSub.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -788,16 +794,21 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  // Diagnostic only, same reasoning as PlaybackQueueEnded above.
+  // Diagnostic: logs every player state change. (The earlier
+  // Event.PlaybackState / Event.PlaybackQueueEnded listeners never fired
+  // because those names do not exist in @rntp/player - this is the real
+  // event.)
   useEffect(() => {
-    const sub = TrackPlayer.addEventListener(Event.PlaybackState, (data: any) => {
-      logDebug(`(diagnostic) PlaybackState fired: ${data?.state ?? JSON.stringify(data)}`);
+    const sub = TrackPlayer.addEventListener(Event.PlaybackStateChanged, (data: any) => {
+      logDebug(`Playback state changed: ${JSON.stringify(data)}`);
     });
     return () => sub.remove();
   }, []);
 
-  // Real autoplay/repeat-all detection, based on the progress hook instead
-  // of native queue-ended events (which don't fire in this player fork).
+  // Autoplay / repeat-all detection, based on the progress hook. There is
+  // no "queue ended" event in @rntp/player, and the native queue only holds
+  // the current track, so the end of a track is detected by position
+  // getting within ~1.5s of the duration.
   useEffect(() => {
     if (!nowPlaying || progress.duration <= 0) return;
 
