@@ -33,6 +33,7 @@ import TrackPlayer, {
   useIsPlaying,
   useProgress,
 } from '@rntp/player';
+import type { MediaItem } from '@rntp/player';
 import {
   Heart,
   MoreVertical,
@@ -111,6 +112,14 @@ const BG_DARKEN = 0.62;
 // black before it's blended into the background - same idea as BG_DARKEN,
 // applied to the 2nd-ranked color.
 const PANEL_COLOR_DARKEN = 0.45;
+// Resolved stream URLs are reused for this long (YouTube stream URLs stay
+// valid for hours; this is deliberately conservative).
+const RESOLVE_CACHE_TTL_MS = 15 * 60 * 1000;
+const RESOLVE_CACHE_MAX = 10;
+// If the native queue is expected to move on by itself but the transition
+// event does not arrive in time, fall back to advancing from JS.
+const END_WATCHDOG_MS = 4000;
+const SKIP_WATCHDOG_MS = 2500;
 
 const AnimatedSafeAreaView = Animated.createAnimatedComponent(SafeAreaView);
 
@@ -130,9 +139,8 @@ function setupPlayer() {
 
   // Lock screen / notification controls. Play/pause and seeking are handled
   // natively. Next/Previous are routed to JS (see the Event.RemoteNext and
-  // Event.RemotePrevious listeners in AppContent) because the native queue
-  // only ever holds the one currently-playing track - the real queue lives
-  // in React state.
+  // Event.RemotePrevious listeners in AppContent) because the real queue
+  // (shuffle, repeat, lists) lives in React state.
   try {
     TrackPlayer.setCommands({
       capabilities: [
@@ -272,6 +280,46 @@ function shuffledOrder(length: number, frontIndex: number): number[] {
     }
   }
   return indices;
+}
+
+// A copy of the playback-related React state that code running outside a
+// render (native event listeners, async prefetches, timers) can read.
+type PlaybackSnapshot = {
+  queue: Track[];
+  queueIndex: number;
+  shuffleOn: boolean;
+  shuffleOrder: number[];
+  shufflePos: number;
+  repeatMode: RepeatSetting;
+  autoplay: boolean;
+  audioQuality: AudioQuality;
+  downloads: DownloadedTrack[];
+};
+
+type NextTarget = { index: number; shufflePos: number | null };
+
+// Which track would come after the current one, without changing anything.
+// Mirrors goNextViaReplace. Returns null when nothing should be pre-queued:
+// not enough tracks, autoplay off (and repeat not 'all'), or the wrap-around
+// of a shuffled order (which needs a freshly generated order, so it is left
+// to the regular JS advance).
+function peekNext(s: PlaybackSnapshot): NextTarget | null {
+  if (s.queue.length < 2) return null;
+  if (!(s.repeatMode === 'all' || s.autoplay)) return null;
+
+  if (s.shuffleOn) {
+    const nextPos = s.shufflePos + 1;
+    if (nextPos >= s.shuffleOrder.length) return null;
+    const index = s.shuffleOrder[nextPos];
+    return index === s.queueIndex ? null : { index, shufflePos: nextPos };
+  }
+
+  let nextIndex = s.queueIndex + 1;
+  if (nextIndex >= s.queue.length) {
+    if (s.repeatMode === 'off') return null;
+    nextIndex = 0;
+  }
+  return nextIndex === s.queueIndex ? null : { index: nextIndex, shufflePos: null };
 }
 
 // Smoothly fades a style color from whatever it was to `targetColor`
@@ -597,6 +645,51 @@ function AppContent() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handledEndRef = useRef(false);
 
+  // --- Native-queue bookkeeping -------------------------------------------
+  // The native player's queue is kept as either [current] or
+  // [current, next]. Having a "next" item queued is what makes Android show
+  // a Next button on the lock screen, and lets the player move between
+  // tracks without a gap.
+  const playbackStateRef = useRef<PlaybackSnapshot>({
+    queue: [],
+    queueIndex: 0,
+    shuffleOn: false,
+    shuffleOrder: [],
+    shufflePos: 0,
+    repeatMode: 'off',
+    autoplay: true,
+    audioQuality: 'best',
+    downloads: [],
+  });
+  playbackStateRef.current = {
+    queue,
+    queueIndex,
+    shuffleOn,
+    shuffleOrder,
+    shufflePos,
+    repeatMode,
+    autoplay: settings.autoplay,
+    audioQuality: settings.audioQuality,
+    downloads,
+  };
+  // URL (our track key, also used as the native mediaId) of the track the
+  // player is currently on, as far as JS knows.
+  const expectedUrlRef = useRef<string | null>(null);
+  // The track currently sitting in the native queue after the current one.
+  const nextQueuedRef = useRef<{
+    index: number;
+    shufflePos: number | null;
+    url: string;
+  } | null>(null);
+  const prefetchTokenRef = useRef(0);
+  const prefetchingUrlRef = useRef<string | null>(null);
+  const playRequestRef = useRef(0);
+  const resolvedCacheRef = useRef<Map<string, { item: MediaItem; at: number }>>(
+    new Map(),
+  );
+  const endWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     logDebug('App started');
     try {
@@ -794,10 +887,7 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  // Diagnostic: logs every player state change. (The earlier
-  // Event.PlaybackState / Event.PlaybackQueueEnded listeners never fired
-  // because those names do not exist in @rntp/player - this is the real
-  // event.)
+  // Diagnostic: logs every player state change.
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackStateChanged, (data: any) => {
       logDebug(`Playback state changed: ${JSON.stringify(data)}`);
@@ -805,10 +895,95 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  // Autoplay / repeat-all detection, based on the progress hook. There is
-  // no "queue ended" event in @rntp/player, and the native queue only holds
-  // the current track, so the end of a track is detected by position
-  // getting within ~1.5s of the duration.
+  // The native player moved to another queue item. Transitions we caused
+  // ourselves (a new track started via playAtIndex) already match
+  // expectedUrlRef and are ignored. Anything else is the player advancing
+  // on its own to the prefetched next track (or a native skipToNext), so
+  // React state is brought in line with it.
+  useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.MediaItemTransition, (e: any) => {
+      const url: string | undefined = e?.item?.mediaId;
+      if (!url) return;
+      if (url === expectedUrlRef.current) return;
+
+      // Guard against a late event for an item that is no longer current.
+      try {
+        const active = TrackPlayer.getActiveMediaItem();
+        if (active?.mediaId && active.mediaId !== url) return;
+      } catch {
+        // ignore - fall through and trust the event
+      }
+
+      const s = playbackStateRef.current;
+      const queued = nextQueuedRef.current;
+      const idx =
+        queued && queued.url === url
+          ? queued.index
+          : s.queue.findIndex(tr => tr.url === url);
+      if (idx < 0 || !s.queue[idx]) {
+        logDebug(`Native transition to an unknown item (${url}); ignoring`);
+        return;
+      }
+
+      logDebug(`Native advance to "${s.queue[idx].name}" (index ${idx})`);
+      if (endWatchdogRef.current) {
+        clearTimeout(endWatchdogRef.current);
+        endWatchdogRef.current = null;
+      }
+      if (skipWatchdogRef.current) {
+        clearTimeout(skipWatchdogRef.current);
+        skipWatchdogRef.current = null;
+      }
+      expectedUrlRef.current = url;
+      nextQueuedRef.current = null;
+      prefetchTokenRef.current++;
+      prefetchingUrlRef.current = null;
+
+      setQueueIndex(idx);
+      setNowPlaying(s.queue[idx]);
+      if (s.shuffleOn) {
+        const pos =
+          queued && queued.url === url && queued.shufflePos !== null
+            ? queued.shufflePos
+            : s.shuffleOrder.indexOf(idx);
+        if (pos >= 0) setShufflePos(pos);
+      }
+
+      // The finished item is no longer needed in the native queue.
+      try {
+        if (typeof e.index === 'number' && e.index > 0) {
+          TrackPlayer.removeMediaItems(0, e.index);
+        }
+      } catch (err: any) {
+        logDebug(`Could not remove finished item: ${err?.message ?? err}`);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Whenever the playback context changes (new track, shuffle/repeat/
+  // autoplay toggled, ...), make sure the native queue holds exactly the
+  // right "next" item. ensureNextQueued is idempotent.
+  useEffect(() => {
+    void ensureNextQueued();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    nowPlaying?.url,
+    queue,
+    queueIndex,
+    shuffleOn,
+    shuffleOrder,
+    shufflePos,
+    repeatMode,
+    settings.autoplay,
+  ]);
+
+  // Autoplay / repeat-all detection, based on the progress hook. If the
+  // next track is already queued natively, the player advances by itself
+  // (and the MediaItemTransition listener syncs state); a watchdog falls
+  // back to a JS advance if that never happens. If nothing is queued, the
+  // end of a track (position within ~1.5s of the duration) triggers the JS
+  // advance directly.
   useEffect(() => {
     if (!nowPlaying || progress.duration <= 0) return;
 
@@ -828,14 +1003,34 @@ function AppContent() {
     }
 
     const willAdvance = repeatMode === 'all' || settings.autoplay;
-    logDebug(
-      `Track end reached (remaining=${remaining.toFixed(2)}s, repeat=${repeatMode}, autoplay=${settings.autoplay}) -> ${
-        willAdvance ? 'advancing' : 'stopping'
-      }`,
-    );
-    if (willAdvance) {
-      goNextRef.current();
+    if (!willAdvance) {
+      logDebug(
+        `Track end reached (remaining=${remaining.toFixed(2)}s, repeat=${repeatMode}, autoplay=${settings.autoplay}) -> stopping`,
+      );
+      return;
     }
+
+    if (nextQueuedRef.current) {
+      const urlAtEnd = expectedUrlRef.current;
+      logDebug(
+        `Track end reached (remaining=${remaining.toFixed(2)}s) -> native queue will advance (watchdog armed)`,
+      );
+      if (endWatchdogRef.current) clearTimeout(endWatchdogRef.current);
+      endWatchdogRef.current = setTimeout(() => {
+        endWatchdogRef.current = null;
+        if (expectedUrlRef.current === urlAtEnd) {
+          logDebug('Native advance did not happen in time -> falling back to JS advance');
+          nextQueuedRef.current = null;
+          goNextRef.current();
+        }
+      }, END_WATCHDOG_MS);
+      return;
+    }
+
+    logDebug(
+      `Track end reached (remaining=${remaining.toFixed(2)}s, repeat=${repeatMode}, autoplay=${settings.autoplay}) -> advancing`,
+    );
+    goNextRef.current();
   }, [progress.position, progress.duration, nowPlaying, repeatMode, settings.autoplay]);
 
   useEffect(() => {
@@ -1053,6 +1248,123 @@ function AppContent() {
     changeView('playlist');
   }
 
+  // Turns one of our tracks into something the native player can play:
+  // the downloaded file if there is one, otherwise a freshly resolved (or
+  // recently cached) stream URL. The track's YouTube URL is used as the
+  // native mediaId so queue events can be mapped back to our tracks.
+  async function resolveMediaItem(
+    track: Track,
+  ): Promise<{ item: MediaItem; offline: boolean }> {
+    const s = playbackStateRef.current;
+
+    const downloaded = s.downloads.find(d => d.url === track.url);
+    if (downloaded) {
+      return {
+        offline: true,
+        item: {
+          mediaId: track.url,
+          url: toPlayableUrl(downloaded.localPath),
+          title: downloaded.name,
+          artist: 'YouTube',
+          artworkUrl: downloaded.thumbnailUrl,
+        },
+      };
+    }
+
+    const cacheKey = `${track.url}|${s.audioQuality}`;
+    const cached = resolvedCacheRef.current.get(cacheKey);
+    if (cached && Date.now() - cached.at < RESOLVE_CACHE_TTL_MS) {
+      return { offline: false, item: cached.item };
+    }
+
+    const stream = await getStreamUrl(track.url, s.audioQuality);
+    const item: MediaItem = {
+      mediaId: track.url,
+      url: stream.streamUrl,
+      title: stream.title || track.name,
+      artist: 'YouTube',
+      artworkUrl: stream.thumbnailUrl || track.thumbnailUrl,
+    };
+    const cache = resolvedCacheRef.current;
+    cache.set(cacheKey, { item, at: Date.now() });
+    if (cache.size > RESOLVE_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    return { offline: false, item };
+  }
+
+  // Removes everything after the current item from the native queue. The
+  // invariant is that the current item is always at native index 0.
+  function removeQueuedNext() {
+    try {
+      const q = TrackPlayer.getQueue();
+      if (q.length > 1) TrackPlayer.removeMediaItems(1, q.length);
+    } catch (e: any) {
+      logDebug(`Could not clear queued next item: ${e?.message ?? e}`);
+    }
+    nextQueuedRef.current = null;
+  }
+
+  // Makes the native queue [current] + (the correct next track, if any).
+  async function ensureNextQueued() {
+    if (!playerSetupDone) return;
+    const currentUrl = expectedUrlRef.current;
+    if (!currentUrl) return;
+
+    const s = playbackStateRef.current;
+    const target = peekNext(s);
+    const queued = nextQueuedRef.current;
+
+    if (!target) {
+      if (queued) {
+        logDebug('Next track no longer wanted in native queue; removing it');
+        removeQueuedNext();
+      }
+      return;
+    }
+
+    const targetTrack = s.queue[target.index];
+    if (!targetTrack) return;
+
+    if (queued && queued.url === targetTrack.url) {
+      nextQueuedRef.current = {
+        index: target.index,
+        shufflePos: target.shufflePos,
+        url: targetTrack.url,
+      };
+      return;
+    }
+
+    if (queued) removeQueuedNext();
+    if (prefetchingUrlRef.current === targetTrack.url) return;
+
+    const token = ++prefetchTokenRef.current;
+    prefetchingUrlRef.current = targetTrack.url;
+    try {
+      const { item } = await resolveMediaItem(targetTrack);
+      if (token !== prefetchTokenRef.current || expectedUrlRef.current !== currentUrl) {
+        logDebug(`Dropped stale prefetch for "${targetTrack.name}"`);
+        return;
+      }
+      const q = TrackPlayer.getQueue();
+      if (q.length > 1) TrackPlayer.removeMediaItems(1, q.length);
+      TrackPlayer.addMediaItem(item);
+      nextQueuedRef.current = {
+        index: target.index,
+        shufflePos: target.shufflePos,
+        url: targetTrack.url,
+      };
+      logDebug(`Queued next track natively: "${targetTrack.name}"`);
+    } catch (e: any) {
+      logDebug(`Prefetch failed for "${targetTrack.name}": ${e?.message ?? e}`);
+    } finally {
+      if (prefetchingUrlRef.current === targetTrack.url) {
+        prefetchingUrlRef.current = null;
+      }
+    }
+  }
+
   async function playAtIndex(
     list: SearchResult[],
     index: number,
@@ -1062,42 +1374,42 @@ function AppContent() {
     if (!item) return;
 
     logDebug(`playAtIndex: "${item.name}" (index ${index}, newQueue=${isNewQueue})`);
+    const myRequest = ++playRequestRef.current;
     setLoadingTrack(item.url);
     try {
-      const downloaded = getDownloadedTrack(item.url);
+      const { item: mediaItem, offline } = await resolveMediaItem(item);
 
-      let streamUrl: string;
-      let title: string;
-      let thumbnailUrl: string | undefined;
-
-      if (downloaded) {
-        streamUrl = toPlayableUrl(downloaded.localPath);
-        title = downloaded.name;
-        thumbnailUrl = downloaded.thumbnailUrl;
-        logDebug(`Playing offline: ${title}`);
-      } else {
-        const stream = await getStreamUrl(item.url, settings.audioQuality);
-        streamUrl = stream.streamUrl;
-        title = stream.title || item.name;
-        thumbnailUrl = stream.thumbnailUrl || item.thumbnailUrl;
+      // A newer playAtIndex call started while this one was resolving.
+      if (myRequest !== playRequestRef.current) {
+        logDebug(`playAtIndex for "${item.name}" superseded`);
+        return;
       }
 
-      await TrackPlayer.setMediaItems([
-        {
-          url: streamUrl,
-          title,
-          artist: 'YouTube',
-          artworkUrl: thumbnailUrl,
-        },
-      ]);
-      await TrackPlayer.play();
+      // From here on, this call replaces the whole native queue.
+      if (endWatchdogRef.current) {
+        clearTimeout(endWatchdogRef.current);
+        endWatchdogRef.current = null;
+      }
+      if (skipWatchdogRef.current) {
+        clearTimeout(skipWatchdogRef.current);
+        skipWatchdogRef.current = null;
+      }
+      prefetchTokenRef.current++;
+      prefetchingUrlRef.current = null;
+      nextQueuedRef.current = null;
+      expectedUrlRef.current = item.url;
+
+      TrackPlayer.setMediaItems([mediaItem]);
+      TrackPlayer.play();
 
       setQueue(list);
       setQueueIndex(index);
       setNowPlaying(item);
-      if (!downloaded) {
-        logDebug(`Playing (${settings.audioQuality}): ${item.name}`);
-      }
+      logDebug(
+        offline
+          ? `Playing offline: ${item.name}`
+          : `Playing (${settings.audioQuality}): ${item.name}`,
+      );
 
       if (isNewQueue) {
         const order = shuffledOrder(list.length, index);
@@ -1112,12 +1424,15 @@ function AppContent() {
       setSearchError(msg);
       logDebug(`Playback failed for "${item.name}": ${msg}`);
     } finally {
-      setLoadingTrack(null);
+      if (myRequest === playRequestRef.current) {
+        setLoadingTrack(null);
+      }
     }
   }
 
-  function goNext() {
-    logDebug('goNext called');
+  // The original "replace the queue and play the next track" advance. Used
+  // whenever the next track is not already waiting in the native queue.
+  function goNextViaReplace() {
     if (queue.length === 0) return;
 
     if (shuffleOn) {
@@ -1140,6 +1455,39 @@ function AppContent() {
       }
       playAtIndex(queue, nextIndex, false);
     }
+  }
+
+  function goNext() {
+    logDebug('goNext called');
+    if (queue.length === 0) return;
+
+    // Fast path: the next track is already queued natively, so let the
+    // player skip to it (instant and gapless). The MediaItemTransition
+    // listener updates React state. A watchdog falls back to the regular
+    // advance if that never happens.
+    const queued = nextQueuedRef.current;
+    if (queued) {
+      logDebug(`goNext: skipping natively to "${queue[queued.index]?.name}"`);
+      nextQueuedRef.current = null;
+      try {
+        TrackPlayer.skipToNext();
+      } catch (e: any) {
+        logDebug(`skipToNext failed (${e?.message ?? e}); using regular advance`);
+        goNextViaReplace();
+        return;
+      }
+      if (skipWatchdogRef.current) clearTimeout(skipWatchdogRef.current);
+      skipWatchdogRef.current = setTimeout(() => {
+        skipWatchdogRef.current = null;
+        if (expectedUrlRef.current !== queued.url) {
+          logDebug('Native skip did not complete -> falling back to regular advance');
+          goNextViaReplace();
+        }
+      }, SKIP_WATCHDOG_MS);
+      return;
+    }
+
+    goNextViaReplace();
   }
 
   function goPrevious() {
