@@ -775,7 +775,25 @@ function AppContent() {
         if (startAt > 1) pendingSeekRef.current = { url: track.url, position: startAt };
         if (item) {
           expectedUrlRef.current = track.url;
-          TrackPlayer.setMediaItems([item]);
+          let attempts = 0;
+          let loadedNatively = false;
+          while (attempts < 12 && !loadedNatively) {
+            if (expectedUrlRef.current !== track.url || playRequestRef.current !== 0) break;
+            attempts++;
+            try {
+              TrackPlayer.setMediaItems([item]);
+              await new Promise<void>(resolve => setTimeout(() => resolve(), 250));
+              loadedNatively = TrackPlayer.getQueue().length > 0;
+            } catch (loadErr: any) {
+              logDebug(`Restore load attempt ${attempts} failed: ${loadErr?.message ?? loadErr}`);
+            }
+          }
+          logDebug(`Restore load: attempts=${attempts}, loaded=${loadedNatively}`);
+          if (playRequestRef.current !== 0) {
+            logDebug('Session restore aborted: playback was started meanwhile');
+            return;
+          }
+          if (!loadedNatively) expectedUrlRef.current = null;
           if (startAt > 1) {
             try {
               // no seek before the player is ready: the saved position is applied by the ready listener
@@ -1722,7 +1740,13 @@ function AppContent() {
     if (playing) {
       await TrackPlayer.pause();
     } else {
-      if (!expectedUrlRef.current && nowPlaying && queue.length > 0) {
+      let nativeEmpty = false;
+      try {
+        nativeEmpty = TrackPlayer.getQueue().length === 0 || progressRef.current.duration <= 0;
+      } catch {
+        nativeEmpty = true;
+      }
+      if ((!expectedUrlRef.current || nativeEmpty) && nowPlaying && queue.length > 0) {
         logDebug('Play pressed with nothing loaded natively -> loading current track');
         playAtIndex(queue, queueIndex, false);
         return;
