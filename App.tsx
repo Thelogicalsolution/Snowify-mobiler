@@ -851,10 +851,10 @@ function AppContent() {
       pendingSeekRef.current = null;
       try {
         TrackPlayer.seekTo(pending.position);
-        logDebug(Restored position: ${formatTime(pending.position)});
+        logDebug(`Restored position: ${formatTime(pending.position)}`);
         void ensureNextQueued();
       } catch (e: any) {
-        logDebug(Could not restore position: ${e?.message ?? e});
+        logDebug(`Could not restore position: ${e?.message ?? e}`);
         void ensureNextQueued();
       }
     });
@@ -1077,7 +1077,7 @@ function AppContent() {
       if (!url) return;
       if (url === expectedUrlRef.current) return;
       if (pendingSeekRef.current) {
-        logDebug(Transition while a restored position was pending: ${JSON.stringify({ index: e?.index, id: e?.item?.mediaId })});
+        logDebug(`Transition while a restored position was pending: ${JSON.stringify({ index: e?.index, id: e?.item?.mediaId })}`);
       }
 
       // Guard against a late event for an item that is no longer current.
