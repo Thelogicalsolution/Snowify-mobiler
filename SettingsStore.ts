@@ -48,6 +48,8 @@ export async function resetAllData(): Promise<void> {
       'snowify_liked_songs',
       'snowify_playlists',
       'snowify_downloads',
+      'snowify_session',
+      'snowify_session_position',
       SETTINGS_KEY,
     ]);
   } catch {

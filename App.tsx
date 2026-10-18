@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Alert,
   Animated,
   FlatList,
@@ -80,6 +81,12 @@ import {
   saveDownloads,
 } from './DownloadStore';
 import { downloadTrackAudio, deleteDownloadedFile } from './DownloadManager';
+import {
+  loadSession,
+  saveSession,
+  loadPlaybackPosition,
+  savePlaybackPosition,
+} from './SessionStore';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -689,6 +696,168 @@ function AppContent() {
   );
   const endWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- Resume on relaunch ---------------------------------------------------
+  // Queue/shuffle/repeat are saved (debounced) whenever they change. Position
+  // and volume are saved separately every ~10 s while playing, on pause, and
+  // when the app leaves the foreground. On startup the last track is loaded
+  // PAUSED at the saved position.
+  const [sessionReady, setSessionReady] = useState(false);
+  const sessionReadyRef = useRef(false);
+  sessionReadyRef.current = sessionReady;
+  const sessionRestoreStartedRef = useRef(false);
+  // A saved position still waiting to be applied once the restored track is
+  // ready to play.
+  const pendingSeekRef = useRef<{ url: string; position: number } | null>(null);
+  const progressRef = useRef({ position: 0, duration: 0 });
+  progressRef.current = { position: progress.position, duration: progress.duration };
+  const volumeRef = useRef(1);
+  volumeRef.current = volume;
+
+  function saveProgressNow() {
+    if (!sessionReadyRef.current) return;
+    if (playbackStateRef.current.queue.length === 0) return;
+    const pending = pendingSeekRef.current;
+    const url = pending ? pending.url : expectedUrlRef.current;
+    if (!url) return;
+    const { position, duration } = progressRef.current;
+    let safePosition = pending ? pending.position : Math.max(0, position);
+    // Within 5 s of the end: save 0, so a restored session never lands in
+    // the end-of-track window (which would trigger an instant advance).
+    if (!pending && duration > 0 && position > duration - 5) safePosition = 0;
+    void savePlaybackPosition({ url, position: safePosition, volume: volumeRef.current });
+  }
+
+  // Restore the last session once settings and downloads are loaded.
+  useEffect(() => {
+    if (!settingsLoaded || !downloadsLoaded) return;
+    if (sessionRestoreStartedRef.current) return;
+    sessionRestoreStartedRef.current = true;
+
+    (async () => {
+      try {
+        if (!playerSetupDone) {
+          logDebug('Session restore skipped: player is not set up');
+          return;
+        }
+        const saved = await loadSession();
+        if (!saved) {
+          logDebug('Session restore: nothing saved');
+          return;
+        }
+        const track = saved.queue[saved.queueIndex];
+        const savedPos = await loadPlaybackPosition();
+        const startAt = savedPos && savedPos.url === track.url ? savedPos.position : 0;
+        const restoredVolume = savedPos ? clamp(savedPos.volume, 0, 1) : 1;
+
+        const orderValid =
+          saved.shuffleOrder.length === saved.queue.length &&
+          saved.shuffleOrder[saved.shufflePos] === saved.queueIndex;
+        const order = orderValid
+          ? saved.shuffleOrder
+          : shuffledOrder(saved.queue.length, saved.queueIndex);
+        const orderPos = orderValid ? saved.shufflePos : 0;
+
+        let item: MediaItem | null = null;
+        try {
+          item = (await resolveMediaItem(track)).item;
+        } catch (e: any) {
+          logDebug(
+            `Session restore: could not load "${track.name}" (${e?.message ?? e}); showing it unloaded`,
+          );
+        }
+
+        if (playRequestRef.current !== 0 || expectedUrlRef.current) {
+          logDebug('Session restore skipped: playback was already started');
+          return;
+        }
+
+        if (startAt > 1) pendingSeekRef.current = { url: track.url, position: startAt };
+        if (item) {
+          expectedUrlRef.current = track.url;
+          TrackPlayer.setMediaItems([item]);
+          if (startAt > 1) {
+            try {
+              TrackPlayer.seekTo(startAt);
+            } catch {
+              // the PlaybackStateChanged 'ready' listener below seeks again
+            }
+          }
+        }
+
+        setQueue(saved.queue);
+        setQueueIndex(saved.queueIndex);
+        setShuffleOn(saved.shuffleOn);
+        setShuffleOrder(order);
+        setShufflePos(orderPos);
+        setRepeatMode(saved.repeatMode);
+        setVolume(restoredVolume);
+        setNowPlaying(track);
+        logDebug(
+          `Session restored: "${track.name}" at ${formatTime(startAt)} (paused, ${saved.queue.length} in queue, loaded=${!!item})`,
+        );
+      } catch (e: any) {
+        logDebug(`Session restore failed: ${e?.message ?? e}`);
+      } finally {
+        setSessionReady(true);
+      }
+    })();
+  }, [settingsLoaded, downloadsLoaded]);
+
+  // Save queue/shuffle/repeat state whenever it changes (debounced).
+  useEffect(() => {
+    if (!sessionReady || queue.length === 0) return;
+    const id = setTimeout(() => {
+      void saveSession({ queue, queueIndex, shuffleOn, shuffleOrder, shufflePos, repeatMode });
+    }, 400);
+    return () => clearTimeout(id);
+  }, [sessionReady, queue, queueIndex, shuffleOn, shuffleOrder, shufflePos, repeatMode]);
+
+  // Volume drags change `volume` many times a second, so save it debounced.
+  useEffect(() => {
+    if (!sessionReady) return;
+    const id = setTimeout(saveProgressNow, 600);
+    return () => clearTimeout(id);
+  }, [volume, sessionReady]);
+
+  // Position: on pause, and every 10 s while playing.
+  useEffect(() => {
+    if (!playing) {
+      saveProgressNow();
+      return;
+    }
+    const id = setInterval(saveProgressNow, 10000);
+    return () => clearInterval(id);
+  }, [playing]);
+
+  // Position: when the app goes to the background.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active') saveProgressNow();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Applies the saved position once the restored track reports 'ready'.
+  useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.PlaybackStateChanged, (data: any) => {
+      const pending = pendingSeekRef.current;
+      if (!pending || data?.state !== 'ready') return;
+      if (expectedUrlRef.current !== pending.url) {
+        // The user started a different track: the saved position is obsolete.
+        if (expectedUrlRef.current) pendingSeekRef.current = null;
+        return;
+      }
+      pendingSeekRef.current = null;
+      try {
+        TrackPlayer.seekTo(pending.position);
+        logDebug(`Restored position: ${formatTime(pending.position)}`);
+      } catch (e: any) {
+        logDebug(`Could not restore position: ${e?.message ?? e}`);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     logDebug('App started');
@@ -1546,6 +1715,11 @@ function AppContent() {
     if (playing) {
       await TrackPlayer.pause();
     } else {
+      if (!expectedUrlRef.current && nowPlaying && queue.length > 0) {
+        logDebug('Play pressed with nothing loaded natively -> loading current track');
+        playAtIndex(queue, queueIndex, false);
+        return;
+      }
       await TrackPlayer.play();
     }
   }
@@ -1594,6 +1768,7 @@ function AppContent() {
             downloads.map(d => deleteDownloadedFile(d.localPath)),
           );
           await resetAllData();
+          setSessionReady(false);
           setLikedSongs([]);
           setPlaylists([]);
           setDownloads([]);
