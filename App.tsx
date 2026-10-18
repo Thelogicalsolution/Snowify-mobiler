@@ -714,7 +714,7 @@ function AppContent() {
   const volumeRef = useRef(1);
   volumeRef.current = volume;
 
-  function saveProgressNow() {
+  function saveProgressNow(verbose = true) {
     if (!sessionReadyRef.current) return;
     if (playbackStateRef.current.queue.length === 0) return;
     const pending = pendingSeekRef.current;
@@ -725,6 +725,9 @@ function AppContent() {
     // Within 5 s of the end: save 0, so a restored session never lands in
     // the end-of-track window (which would trigger an instant advance).
     if (!pending && duration > 0 && position > duration - 5) safePosition = 0;
+    if (verbose) {
+      logDebug(`Position saved: ${formatTime(safePosition)}, volume ${Math.round(volumeRef.current * 100)}%`);
+    }
     void savePlaybackPosition({ url, position: safePosition, volume: volumeRef.current });
   }
 
@@ -772,7 +775,10 @@ function AppContent() {
           return;
         }
 
-        if (startAt > 1) pendingSeekRef.current = { url: track.url, position: startAt };
+        if (startAt > 1) {
+          pendingSeekRef.current = { url: track.url, position: startAt };
+          logDebug(`Saved position pending: ${formatTime(startAt)} (applied once the player is ready)`);
+        }
         if (item) {
           expectedUrlRef.current = track.url;
           let attempts = 0;
@@ -783,7 +789,9 @@ function AppContent() {
             try {
               TrackPlayer.setMediaItems([item]);
               await new Promise<void>(resolve => setTimeout(() => resolve(), 250));
-              loadedNatively = TrackPlayer.getQueue().length > 0;
+              const nativeQueueLength = TrackPlayer.getQueue().length;
+              loadedNatively = nativeQueueLength > 0;
+              logDebug(`Restore load attempt ${attempts}: native queue length=${nativeQueueLength}, progress=${JSON.stringify(TrackPlayer.getProgress())}`);
             } catch (loadErr: any) {
               logDebug(`Restore load attempt ${attempts} failed: ${loadErr?.message ?? loadErr}`);
             }
@@ -844,13 +852,14 @@ function AppContent() {
       saveProgressNow();
       return;
     }
-    const id = setInterval(saveProgressNow, 10000);
+    const id = setInterval(() => saveProgressNow(false), 10000);
     return () => clearInterval(id);
   }, [playing]);
 
   // Position: when the app goes to the background.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
+      logDebug(`App state: ${state}`);
       if (state !== 'active') saveProgressNow();
     });
     return () => sub.remove();
@@ -863,7 +872,10 @@ function AppContent() {
       if (!pending || data?.state !== 'ready') return;
       if (expectedUrlRef.current !== pending.url) {
         // The user started a different track: the saved position is obsolete.
-        if (expectedUrlRef.current) pendingSeekRef.current = null;
+        if (expectedUrlRef.current) {
+          pendingSeekRef.current = null;
+          logDebug('Saved position dropped: a different track is loaded now');
+        }
         return;
       }
       pendingSeekRef.current = null;
@@ -881,6 +893,7 @@ function AppContent() {
 
   useEffect(() => {
     logDebug('App started');
+    logDebug('Build: restore-debug v2');
     try {
       setupPlayer();
       logDebug('Player initialized');
@@ -1504,7 +1517,10 @@ function AppContent() {
     const currentUrl = expectedUrlRef.current;
     if (!currentUrl) return;
     // The restored session's saved position is not applied yet: do not queue a next track before it is.
-    if (pendingSeekRef.current?.url === currentUrl) return;
+    if (pendingSeekRef.current?.url === currentUrl) {
+      logDebug('Next-track queueing held back until the saved position is applied');
+      return;
+    }
 
     const s = playbackStateRef.current;
     const target = peekNext(s);
@@ -1747,7 +1763,7 @@ function AppContent() {
         nativeEmpty = true;
       }
       if ((!expectedUrlRef.current || nativeEmpty) && nowPlaying && queue.length > 0) {
-        logDebug('Play pressed with nothing loaded natively -> loading current track');
+        logDebug(`Play pressed but nothing is playable natively (expectedUrl=${!!expectedUrlRef.current}, nativeEmpty=${nativeEmpty}, duration=${progressRef.current.duration}) -> loading current track`);
         playAtIndex(queue, queueIndex, false);
         return;
       }
