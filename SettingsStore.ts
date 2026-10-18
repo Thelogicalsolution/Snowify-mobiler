@@ -42,17 +42,19 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   }
 }
 
-export async function resetAllData(): Promise<void> {
+export async function resetAllData(): Promise<string> {
+  const keys = [
+    'snowify_liked_songs',
+    'snowify_playlists',
+    'snowify_downloads',
+    'snowify_session',
+    'snowify_session_position',
+    SETTINGS_KEY,
+  ];
   try {
-    await AsyncStorage.multiRemove([
-      'snowify_liked_songs',
-      'snowify_playlists',
-      'snowify_downloads',
-      'snowify_session',
-      'snowify_session_position',
-      SETTINGS_KEY,
-    ]);
-  } catch {
-    // ignore
+    await AsyncStorage.multiRemove(keys);
+    return 'multiRemove ok';
+  } catch (e: any) {
+    return `multiRemove FAILED: ${e?.message ?? e}`;
   }
 }

@@ -97,3 +97,17 @@ export async function loadPlaybackPosition(): Promise<SavedPosition | null> {
     return null;
   }
 }
+
+export async function clearSession(): Promise<string> {
+  const results: string[] = [];
+  for (const key of [SESSION_KEY, POSITION_KEY]) {
+    try {
+      await AsyncStorage.removeItem(key);
+      const left = await AsyncStorage.getItem(key);
+      results.push(`${key}: ${left === null ? 'cleared' : 'STILL PRESENT'}`);
+    } catch (e: any) {
+      results.push(`${key}: error ${e?.message ?? e}`);
+    }
+  }
+  return results.join(', ');
+}

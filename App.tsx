@@ -86,6 +86,7 @@ import {
   saveSession,
   loadPlaybackPosition,
   savePlaybackPosition,
+  clearSession,
 } from './SessionStore';
 
 type SearchResult = Track;
@@ -1814,8 +1815,23 @@ function AppContent() {
           await Promise.all(
             downloads.map(d => deleteDownloadedFile(d.localPath)),
           );
-          await resetAllData();
+          const resetResult = await resetAllData();
+          logDebug(`Reset: ${resetResult}`);
           setSessionReady(false);
+          setQueue([]);
+          setQueueIndex(0);
+          setShuffleOrder([]);
+          setShufflePos(0);
+          setNowPlaying(null);
+          expectedUrlRef.current = null;
+          nextQueuedRef.current = null;
+          pendingSeekRef.current = null;
+          try {
+            TrackPlayer.clear();
+          } catch (clearErr: any) {
+            logDebug(`Reset: could not clear the native queue: ${clearErr?.message ?? clearErr}`);
+          }
+          logDebug(`Reset: session keys -> ${await clearSession()}`);
           setLikedSongs([]);
           setPlaylists([]);
           setDownloads([]);
