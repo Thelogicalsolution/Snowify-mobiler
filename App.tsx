@@ -140,7 +140,7 @@ function setupPlayer() {
   TrackPlayer.setupPlayer({
     contentType: 'music',
     handleAudioBecomingNoisy: true,
-    android: { wakeMode: 'network' },
+    android: { wakeMode: 'network', taskRemovedBehavior: 'stop' },
   });
   playerSetupDone = true;
 
