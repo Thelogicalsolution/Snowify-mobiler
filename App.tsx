@@ -778,7 +778,7 @@ function AppContent() {
           TrackPlayer.setMediaItems([item]);
           if (startAt > 1) {
             try {
-              TrackPlayer.seekTo(startAt);
+              // no seek before the player is ready: the saved position is applied by the ready listener
             } catch {
               // the PlaybackStateChanged 'ready' listener below seeks again
             }
@@ -851,9 +851,11 @@ function AppContent() {
       pendingSeekRef.current = null;
       try {
         TrackPlayer.seekTo(pending.position);
-        logDebug(`Restored position: ${formatTime(pending.position)}`);
+        logDebug(Restored position: ${formatTime(pending.position)});
+        void ensureNextQueued();
       } catch (e: any) {
-        logDebug(`Could not restore position: ${e?.message ?? e}`);
+        logDebug(Could not restore position: ${e?.message ?? e});
+        void ensureNextQueued();
       }
     });
     return () => sub.remove();
@@ -1074,6 +1076,9 @@ function AppContent() {
       const url: string | undefined = e?.item?.mediaId;
       if (!url) return;
       if (url === expectedUrlRef.current) return;
+      if (pendingSeekRef.current) {
+        logDebug(Transition while a restored position was pending: ${JSON.stringify({ index: e?.index, id: e?.item?.mediaId })});
+      }
 
       // Guard against a late event for an item that is no longer current.
       try {
@@ -1480,6 +1485,8 @@ function AppContent() {
     if (!playerSetupDone) return;
     const currentUrl = expectedUrlRef.current;
     if (!currentUrl) return;
+    // The restored session's saved position is not applied yet: do not queue a next track before it is.
+    if (pendingSeekRef.current?.url === currentUrl) return;
 
     const s = playbackStateRef.current;
     const target = peekNext(s);
