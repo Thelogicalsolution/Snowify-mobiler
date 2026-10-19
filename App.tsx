@@ -53,6 +53,7 @@ import {
   Repeat1,
   Volume2,
   Settings as SettingsIcon,
+  Moon,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -646,6 +647,10 @@ function AppContent() {
 
   const [palette, setPalette] = useState<PaletteSwatch[] | null>(null);
 
+  const [sleepEndAt, setSleepEndAt] = useState<number | null>(null);
+  const [sleepMinutesLeft, setSleepMinutesLeft] = useState(0);
+  const [sleepModalVisible, setSleepModalVisible] = useState(false);
+
   const t = STRINGS[settings.language];
 
   const playing = useIsPlaying();
@@ -1059,6 +1064,48 @@ function AppContent() {
     viewingPlaylistId !== 'downloaded'
       ? viewingPlaylistId
       : null;
+
+  // --- Sleep timer: pauses playback when the chosen time is up ---
+  useEffect(() => {
+    if (sleepEndAt === null) {
+      setSleepMinutesLeft(0);
+      return;
+    }
+    const tick = () => {
+      const msLeft = sleepEndAt - Date.now();
+      if (msLeft <= 0) {
+        logDebug('Sleep timer finished -> pausing');
+        try {
+          TrackPlayer.pause();
+        } catch (e: any) {
+          logDebug(`Sleep timer pause failed: ${e?.message ?? e}`);
+        }
+        setSleepEndAt(null);
+        return;
+      }
+      setSleepMinutesLeft(Math.ceil(msLeft / 60000));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [sleepEndAt]);
+
+  function startSleepTimer(minutes: number) {
+    if (minutes <= 0) {
+      logDebug('Sleep timer cancelled');
+      setSleepEndAt(null);
+    } else {
+      logDebug(`Sleep timer set: ${minutes} min`);
+      setSleepEndAt(Date.now() + minutes * 60000);
+    }
+    setSleepModalVisible(false);
+  }
+
+  const sleepText =
+    settings.language === 'uk'
+      ? { title: 'Таймер сну', minutes: 'хв', off: 'Вимкнути таймер' }
+      : { title: 'Sleep timer', minutes: 'min', off: 'Turn timer off' };
+  const sleepOptions = settings.developerMode ? [1, 15, 30, 45, 60] : [15, 30, 45, 60];
 
   const goNextRef = useRef<() => void>(() => {});
   const goPreviousRef = useRef<() => void>(() => {});
@@ -2332,6 +2379,18 @@ function AppContent() {
               </View>
 
               <View style={styles.volumeRow}>
+                <TouchableOpacity
+                  hitSlop={10}
+                  onPress={() => setSleepModalVisible(true)}
+                  style={styles.sleepButton}
+                >
+                  <Moon size={14} color={sleepEndAt !== null ? resolvedAccent : TEXT_DIM} />
+                  {sleepEndAt !== null && (
+                    <Text style={[styles.sleepButtonText, { color: resolvedAccent }]}>
+                      {sleepMinutesLeft}m
+                    </Text>
+                  )}
+                </TouchableOpacity>
                 <Volume2 size={14} color={TEXT_DIM} />
                 <View style={styles.volumeBarWrapper}>
                   <DraggableBar
@@ -2616,6 +2675,45 @@ function AppContent() {
           </View>
         </View>
       </Modal>
+    <Modal
+        visible={sleepModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSleepModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{sleepText.title}</Text>
+            {sleepOptions.map(m => (
+              <TouchableOpacity
+                key={m}
+                style={styles.modalActionRow}
+                onPress={() => startSleepTimer(m)}
+              >
+                <Text style={styles.modalActionText}>
+                  {m} {sleepText.minutes}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            {sleepEndAt !== null && (
+              <TouchableOpacity
+                style={styles.modalActionRow}
+                onPress={() => startSleepTimer(0)}
+              >
+                <Text style={[styles.modalActionText, { color: LIKE_RED }]}>
+                  {sleepText.off}
+                </Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.modalCancelButton}
+              onPress={() => setSleepModalVisible(false)}
+            >
+              <Text style={styles.modalCancelText}>{t.cancel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </AnimatedSafeAreaView>
   );
 }
@@ -2873,6 +2971,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  sleepButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  sleepButtonText: { fontSize: 11, fontWeight: '700' },
   tabBar: {
     position: 'absolute',
     bottom: 0,
