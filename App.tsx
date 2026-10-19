@@ -1065,38 +1065,51 @@ function AppContent() {
       ? viewingPlaylistId
       : null;
 
-  // --- Sleep timer: pauses playback when the chosen time is up ---
+  // --- Sleep timer: runs natively (survives a dark screen); JS only shows the countdown ---
   useEffect(() => {
     if (sleepEndAt === null) {
       setSleepMinutesLeft(0);
       return;
     }
     const tick = () => {
-      const msLeft = sleepEndAt - Date.now();
-      if (msLeft <= 0) {
-        logDebug('Sleep timer finished -> pausing');
-        try {
-          TrackPlayer.pause();
-        } catch (e: any) {
-          logDebug(`Sleep timer pause failed: ${e?.message ?? e}`);
+      try {
+        const timer = TrackPlayer.getSleepTimer();
+        if (!timer || timer.type !== 'time') {
+          logDebug('Sleep timer is no longer active natively -> clearing');
+          setSleepEndAt(null);
+          return;
         }
-        setSleepEndAt(null);
-        return;
+        setSleepMinutesLeft(Math.max(1, Math.ceil(timer.remainingSeconds / 60)));
+      } catch (e: any) {
+        logDebug(`Sleep timer read failed: ${e?.message ?? e}`);
       }
-      setSleepMinutesLeft(Math.ceil(msLeft / 60000));
     };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [sleepEndAt]);
 
-  function startSleepTimer(minutes: number) {
-    if (minutes <= 0) {
-      logDebug('Sleep timer cancelled');
+  useEffect(() => {
+    const sub = TrackPlayer.addEventListener(Event.SleepTimerTriggered, (e: any) => {
+      logDebug(`Sleep timer triggered natively (${e?.type ?? 'time'}) -> playback paused`);
       setSleepEndAt(null);
-    } else {
-      logDebug(`Sleep timer set: ${minutes} min`);
-      setSleepEndAt(Date.now() + minutes * 60000);
+    });
+    return () => sub.remove();
+  }, []);
+
+  function startSleepTimer(minutes: number) {
+    try {
+      if (minutes <= 0) {
+        TrackPlayer.cancelSleepTimer();
+        logDebug('Sleep timer cancelled');
+        setSleepEndAt(null);
+      } else {
+        TrackPlayer.sleepAfterTime(minutes * 60);
+        logDebug(`Sleep timer set natively: ${minutes} min`);
+        setSleepEndAt(Date.now() + minutes * 60000);
+      }
+    } catch (e: any) {
+      logDebug(`Sleep timer failed: ${e?.message ?? e}`);
     }
     setSleepModalVisible(false);
   }
