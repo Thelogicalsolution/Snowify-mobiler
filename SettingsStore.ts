@@ -51,10 +51,13 @@ export async function resetAllData(): Promise<string> {
     'snowify_session_position',
     SETTINGS_KEY,
   ];
-  try {
-    await AsyncStorage.multiRemove(keys);
-    return 'multiRemove ok';
-  } catch (e: any) {
-    return `multiRemove FAILED: ${e?.message ?? e}`;
+  const failures: string[] = [];
+  for (const key of keys) {
+    try {
+      await AsyncStorage.removeItem(key);
+    } catch (e: any) {
+      failures.push(`${key}: ${e?.message ?? e}`);
+    }
   }
+  return failures.length === 0 ? 'all keys removed' : `FAILED: ${failures.join(', ')}`;
 }
