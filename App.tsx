@@ -15,6 +15,7 @@ import {
   ScrollView,
   Share,
   StatusBar,
+  ToastAndroid,
   StyleSheet,
   Switch,
   Text,
@@ -57,6 +58,8 @@ import {
   Moon,
   Share2,
   Clock,
+  List,
+  X,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -657,6 +660,7 @@ function AppContent() {
   const [sleepMinutesLeft, setSleepMinutesLeft] = useState(0);
   const [sleepModalVisible, setSleepModalVisible] = useState(false);
 
+  const [queueModalVisible, setQueueModalVisible] = useState(false);
   const [history, setHistory] = useState<Track[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const historyText =
@@ -843,6 +847,81 @@ function AppContent() {
       backupText.doneTitle,
       backupText.done(freshLiked.length, newPlaylists, addedPlaylistTracks, freshHistory.length),
     );
+  }
+
+  const queueText =
+    settings.language === 'uk'
+      ? {
+          title: 'Далі у черзі',
+          nowPlaying: 'Зараз грає',
+          empty: 'Далі нічого немає',
+          close: 'Закрити',
+          playNext: 'Грати наступним',
+          addToQueue: 'Додати до черги',
+          addedNext: 'Зіграє наступною',
+          addedEnd: 'Додано до черги',
+          alreadyTitle: 'Вже в черзі',
+          alreadyMessage: 'Ця пісня вже є в черзі.',
+        }
+      : {
+          title: 'Up next',
+          nowPlaying: 'Now playing',
+          empty: 'Nothing queued after this song',
+          close: 'Close',
+          playNext: 'Play next',
+          addToQueue: 'Add to queue',
+          addedNext: 'Will play next',
+          addedEnd: 'Added to the queue',
+          alreadyTitle: 'Already in the queue',
+          alreadyMessage: 'This song is already in the queue.',
+        };
+
+  // Songs that will play after the current one, in play order.
+  const upcoming: { track: Track; index: number }[] = shuffleOn
+    ? shuffleOrder
+        .slice(shufflePos + 1)
+        .map(i => ({ track: queue[i], index: i }))
+        .filter(x => !!x.track)
+    : queue.slice(queueIndex + 1).map((track, k) => ({ track, index: queueIndex + 1 + k }));
+
+  function addToQueue(track: Track, mode: 'next' | 'end') {
+    if (queue.length === 0) {
+      logDebug(`Queue: nothing playing, starting "${track.name}"`);
+      playAtIndex([track], 0, true);
+      return;
+    }
+    if (queue.some(q => q.url === track.url)) {
+      logDebug(`Queue: "${track.name}" is already in the queue`);
+      Alert.alert(queueText.alreadyTitle, queueText.alreadyMessage);
+      return;
+    }
+    const pos = mode === 'next' ? queueIndex + 1 : queue.length;
+    const newQueue = [...queue.slice(0, pos), track, ...queue.slice(pos)];
+    const shifted = shuffleOrder.map(i => (i >= pos ? i + 1 : i));
+    const orderPos = mode === 'next' ? Math.min(shufflePos + 1, shifted.length) : shifted.length;
+    const newOrder = [...shifted.slice(0, orderPos), pos, ...shifted.slice(orderPos)];
+    logDebug(`Queue: added "${track.name}" (${mode}) at index ${pos}`);
+    setQueue(newQueue);
+    setShuffleOrder(newOrder);
+    ToastAndroid.show(mode === 'next' ? queueText.addedNext : queueText.addedEnd, ToastAndroid.SHORT);
+  }
+
+  function removeFromQueue(removeIdx: number) {
+    if (removeIdx === queueIndex || removeIdx < 0 || removeIdx >= queue.length) return;
+    logDebug(`Queue: removed "${queue[removeIdx].name}" (index ${removeIdx})`);
+    let newPos = shufflePos;
+    const newOrder: number[] = [];
+    shuffleOrder.forEach((qi, pos) => {
+      if (qi === removeIdx) {
+        if (pos < shufflePos) newPos--;
+        return;
+      }
+      newOrder.push(qi > removeIdx ? qi - 1 : qi);
+    });
+    setQueue(queue.filter((_, i) => i !== removeIdx));
+    setQueueIndex(removeIdx < queueIndex ? queueIndex - 1 : queueIndex);
+    setShuffleOrder(newOrder);
+    setShufflePos(Math.max(0, newPos));
   }
 
   function recordHistory(track: Track) {
@@ -2708,6 +2787,13 @@ function AppContent() {
                     </Text>
                   )}
                 </TouchableOpacity>
+                <TouchableOpacity
+                  hitSlop={10}
+                  onPress={() => setQueueModalVisible(true)}
+                  style={styles.sleepButton}
+                >
+                  <List size={14} color={upcoming.length > 0 ? resolvedAccent : TEXT_DIM} />
+                </TouchableOpacity>
                 <Volume2 size={14} color={TEXT_DIM} />
                 <View style={styles.volumeBarWrapper}>
                   <DraggableBar
@@ -2836,6 +2922,29 @@ function AppContent() {
             >
               <Share2 size={18} color="#FFFFFF" />
               <Text style={styles.modalActionText}>{shareLabel}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (!addToPlaylistTarget) return;
+                addToQueue(addToPlaylistTarget, 'next');
+                setAddToPlaylistTarget(null);
+              }}
+            >
+              <SkipForward size={18} color="#FFFFFF" />
+              <Text style={styles.modalActionText}>{queueText.playNext}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (!addToPlaylistTarget) return;
+                addToQueue(addToPlaylistTarget, 'end');
+                setAddToPlaylistTarget(null);
+              }}
+            >
+              <List size={18} color="#FFFFFF" />
+              <Text style={styles.modalActionText}>{queueText.addToQueue}</Text>
             </TouchableOpacity>
 
             {removablePlaylistId && addToPlaylistTarget && (
@@ -3037,6 +3146,57 @@ function AppContent() {
               onPress={() => setSleepModalVisible(false)}
             >
               <Text style={styles.modalCancelText}>{t.cancel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    <Modal
+        visible={queueModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setQueueModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{queueText.title}</Text>
+            {nowPlaying && (
+              <Text style={styles.queueNowPlaying} numberOfLines={1}>
+                {queueText.nowPlaying}: {nowPlaying.name}
+              </Text>
+            )}
+            <ScrollView style={styles.queueScroll}>
+              {upcoming.length === 0 && (
+                <Text style={styles.modalEmptyText}>{queueText.empty}</Text>
+              )}
+              {upcoming.map(item => (
+                <View key={`${item.index}-${item.track.url}`} style={styles.queueRow}>
+                  <TouchableOpacity
+                    style={styles.queueRowMain}
+                    onPress={() => {
+                      setQueueModalVisible(false);
+                      playAtIndex(queue, item.index, false);
+                    }}
+                  >
+                    {item.track.thumbnailUrl ? (
+                      <Image source={{ uri: item.track.thumbnailUrl }} style={styles.queueArt} />
+                    ) : (
+                      <View style={styles.queueArt} />
+                    )}
+                    <Text style={styles.queueTitle} numberOfLines={2}>
+                      {item.track.name}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity hitSlop={10} onPress={() => removeFromQueue(item.index)}>
+                    <X size={18} color={TEXT_DIM} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.modalCancelButton}
+              onPress={() => setQueueModalVisible(false)}
+            >
+              <Text style={styles.modalCancelText}>{queueText.close}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3298,6 +3458,24 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  queueNowPlaying: { color: TEXT_DIM, fontSize: 12, marginBottom: 8 },
+  queueScroll: { maxHeight: 380 },
+  queueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  queueRowMain: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  queueArt: {
+    width: 40,
+    height: 40,
+    borderRadius: 6,
+    backgroundColor: BORDER,
+    marginRight: 12,
+  },
+  queueTitle: { flex: 1, color: '#FFFFFF', fontSize: 13, fontWeight: '600', marginRight: 8 },
   sleepButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   sleepButtonText: { fontSize: 11, fontWeight: '700' },
   tabBar: {
