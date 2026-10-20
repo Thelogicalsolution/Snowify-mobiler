@@ -13,6 +13,7 @@ import {
   Image,
   Modal,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Switch,
@@ -54,6 +55,7 @@ import {
   Volume2,
   Settings as SettingsIcon,
   Moon,
+  Share2,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -1136,6 +1138,18 @@ function AppContent() {
       ? { title: 'Таймер сну', minutes: 'хв', off: 'Вимкнути таймер' }
       : { title: 'Sleep timer', minutes: 'min', off: 'Turn timer off' };
   const sleepOptions = settings.developerMode ? [1, 15, 30, 45, 60] : [15, 30, 45, 60];
+
+  const shareLabel = settings.language === 'uk' ? 'Поділитися' : 'Share';
+
+  async function handleShareTrack(item: Track) {
+    logDebug(`Share: ${item.name}`);
+    setAddToPlaylistTarget(null);
+    try {
+      await Share.share({ message: `${item.name}\n${item.url}` });
+    } catch (e: any) {
+      logDebug(`Share failed: ${e?.message ?? e}`);
+    }
+  }
 
   const goNextRef = useRef<() => void>(() => {});
   const goPreviousRef = useRef<() => void>(() => {});
@@ -2539,6 +2553,16 @@ function AppContent() {
                   ? t.removeDownload
                   : t.downloadForOffline}
               </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (addToPlaylistTarget) handleShareTrack(addToPlaylistTarget);
+              }}
+            >
+              <Share2 size={18} color="#FFFFFF" />
+              <Text style={styles.modalActionText}>{shareLabel}</Text>
             </TouchableOpacity>
 
             {removablePlaylistId && addToPlaylistTarget && (
