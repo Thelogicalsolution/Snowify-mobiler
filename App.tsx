@@ -726,7 +726,17 @@ function AppContent() {
     const pending = pendingSeekRef.current;
     const url = pending ? pending.url : expectedUrlRef.current;
     if (!url) return;
-    const { position, duration } = progressRef.current;
+    let { position, duration } = progressRef.current;
+    try {
+      // The progress hook runs on JS timers, which stop with the screen off: ask the native player.
+      const nativeProgress = TrackPlayer.getProgress();
+      if (nativeProgress && nativeProgress.duration > 0) {
+        position = nativeProgress.position;
+        duration = nativeProgress.duration;
+      }
+    } catch {
+      // keep the hook values
+    }
     let safePosition = pending ? pending.position : Math.max(0, position);
     // Within 5 s of the end: save 0, so a restored session never lands in
     // the end-of-track window (which would trigger an instant advance).
@@ -845,6 +855,13 @@ function AppContent() {
     return () => clearTimeout(id);
   }, [sessionReady, queue, queueIndex, shuffleOn, shuffleOrder, shufflePos, repeatMode]);
 
+  // JS timers are paused while the app is in the background, so the debounced save below may never run: save right away instead.
+  useEffect(() => {
+    if (!sessionReady || queue.length === 0) return;
+    if (AppState.currentState === 'active') return;
+    void saveSession({ queue, queueIndex, shuffleOn, shuffleOrder, shufflePos, repeatMode });
+    saveProgressNow();
+  }, [sessionReady, queue, queueIndex, shuffleOn, shuffleOrder, shufflePos, repeatMode]);
   // Volume drags change `volume` many times a second, so save it debounced.
   useEffect(() => {
     if (!sessionReady) return;
