@@ -12,6 +12,7 @@ import {
   FlatList,
   Image,
   Modal,
+  PanResponder,
   ScrollView,
   Share,
   StatusBar,
@@ -60,6 +61,7 @@ import {
   Clock,
   List,
   X,
+  Menu as GripIcon,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -607,6 +609,132 @@ function SettingsSection({
   );
 }
 
+const QUEUE_ROW_H = 56;
+
+function QueueHandle({
+  k,
+  onStart,
+  onMove,
+  onEnd,
+}: {
+  k: number;
+  onStart: (k: number) => void;
+  onMove: (dy: number) => void;
+  onEnd: (dy: number) => void;
+}) {
+  const latest = useRef({ k, onStart, onMove, onEnd });
+  latest.current = { k, onStart, onMove, onEnd };
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => latest.current.onStart(latest.current.k),
+      onPanResponderMove: (_e, g) => latest.current.onMove(g.dy),
+      onPanResponderRelease: (_e, g) => latest.current.onEnd(g.dy),
+      onPanResponderTerminate: (_e, g) => latest.current.onEnd(g.dy),
+    }),
+  ).current;
+  return (
+    <View {...pan.panHandlers} style={styles.queueHandle}>
+      <GripIcon size={18} color={TEXT_DIM} />
+    </View>
+  );
+}
+
+function QueueList({
+  items,
+  emptyText,
+  onPlay,
+  onRemove,
+  onReorder,
+}: {
+  items: { track: Track; index: number }[];
+  emptyText: string;
+  onPlay: (index: number) => void;
+  onRemove: (index: number) => void;
+  onReorder: (from: number, to: number) => void;
+}) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [targetIdx, setTargetIdx] = useState(0);
+  const dyAnim = useRef(new Animated.Value(0)).current;
+  const fromRef = useRef<number | null>(null);
+  const targetRef = useRef(0);
+  const countRef = useRef(items.length);
+  countRef.current = items.length;
+  const reorderRef = useRef(onReorder);
+  reorderRef.current = onReorder;
+
+  function handleStart(k: number) {
+    fromRef.current = k;
+    targetRef.current = k;
+    dyAnim.setValue(0);
+    setTargetIdx(k);
+    setDragFrom(k);
+  }
+
+  function handleMove(dy: number) {
+    const from = fromRef.current;
+    if (from === null) return;
+    dyAnim.setValue(dy);
+    const t = Math.max(0, Math.min(countRef.current - 1, from + Math.round(dy / QUEUE_ROW_H)));
+    if (t !== targetRef.current) {
+      targetRef.current = t;
+      setTargetIdx(t);
+    }
+  }
+
+  function handleEnd(_dy: number) {
+    const from = fromRef.current;
+    const to = targetRef.current;
+    fromRef.current = null;
+    dyAnim.setValue(0);
+    setDragFrom(null);
+    if (from !== null && from !== to) reorderRef.current(from, to);
+  }
+
+  return (
+    <ScrollView style={styles.queueScroll} scrollEnabled={dragFrom === null}>
+      {items.length === 0 && <Text style={styles.modalEmptyText}>{emptyText}</Text>}
+      {items.map((item, k) => {
+        let shift = 0;
+        if (dragFrom !== null && k !== dragFrom) {
+          if (dragFrom < targetIdx && k > dragFrom && k <= targetIdx) shift = -QUEUE_ROW_H;
+          else if (dragFrom > targetIdx && k >= targetIdx && k < dragFrom) shift = QUEUE_ROW_H;
+        }
+        const dragging = dragFrom === k;
+        return (
+          <Animated.View
+            key={`${item.index}-${item.track.url}`}
+            style={[
+              styles.queueRow,
+              { height: QUEUE_ROW_H },
+              dragging
+                ? { transform: [{ translateY: dyAnim }], zIndex: 10, elevation: 6, backgroundColor: CARD }
+                : { transform: [{ translateY: shift }] },
+            ]}
+          >
+            <QueueHandle k={k} onStart={handleStart} onMove={handleMove} onEnd={handleEnd} />
+            <TouchableOpacity style={styles.queueRowMain} onPress={() => onPlay(item.index)}>
+              {item.track.thumbnailUrl ? (
+                <Image source={{ uri: item.track.thumbnailUrl }} style={styles.queueArt} />
+              ) : (
+                <View style={styles.queueArt} />
+              )}
+              <Text style={styles.queueTitle} numberOfLines={2}>
+                {item.track.name}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity hitSlop={10} onPress={() => onRemove(item.index)}>
+              <X size={18} color={TEXT_DIM} />
+            </TouchableOpacity>
+          </Animated.View>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets();
 
@@ -904,6 +1032,27 @@ function AppContent() {
     setQueue(newQueue);
     setShuffleOrder(newOrder);
     ToastAndroid.show(mode === 'next' ? queueText.addedNext : queueText.addedEnd, ToastAndroid.SHORT);
+  }
+
+  function reorderUpcoming(from: number, to: number) {
+    if (from === to) return;
+    if (shuffleOn) {
+      const head = shuffleOrder.slice(0, shufflePos + 1);
+      const tail = shuffleOrder.slice(shufflePos + 1);
+      if (from < 0 || from >= tail.length) return;
+      const [moved] = tail.splice(from, 1);
+      tail.splice(to, 0, moved);
+      logDebug(`Queue: moved "${queue[moved]?.name}" from ${from + 1} to ${to + 1} (shuffle order)`);
+      setShuffleOrder([...head, ...tail]);
+    } else {
+      const head = queue.slice(0, queueIndex + 1);
+      const tail = queue.slice(queueIndex + 1);
+      if (from < 0 || from >= tail.length) return;
+      const [moved] = tail.splice(from, 1);
+      tail.splice(to, 0, moved);
+      logDebug(`Queue: moved "${moved.name}" from ${from + 1} to ${to + 1}`);
+      setQueue([...head, ...tail]);
+    }
   }
 
   function removeFromQueue(removeIdx: number) {
@@ -3164,34 +3313,16 @@ function AppContent() {
                 {queueText.nowPlaying}: {nowPlaying.name}
               </Text>
             )}
-            <ScrollView style={styles.queueScroll}>
-              {upcoming.length === 0 && (
-                <Text style={styles.modalEmptyText}>{queueText.empty}</Text>
-              )}
-              {upcoming.map(item => (
-                <View key={`${item.index}-${item.track.url}`} style={styles.queueRow}>
-                  <TouchableOpacity
-                    style={styles.queueRowMain}
-                    onPress={() => {
-                      setQueueModalVisible(false);
-                      playAtIndex(queue, item.index, false);
-                    }}
-                  >
-                    {item.track.thumbnailUrl ? (
-                      <Image source={{ uri: item.track.thumbnailUrl }} style={styles.queueArt} />
-                    ) : (
-                      <View style={styles.queueArt} />
-                    )}
-                    <Text style={styles.queueTitle} numberOfLines={2}>
-                      {item.track.name}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity hitSlop={10} onPress={() => removeFromQueue(item.index)}>
-                    <X size={18} color={TEXT_DIM} />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
+            <QueueList
+              items={upcoming}
+              emptyText={queueText.empty}
+              onPlay={index => {
+                setQueueModalVisible(false);
+                playAtIndex(queue, index, false);
+              }}
+              onRemove={removeFromQueue}
+              onReorder={reorderUpcoming}
+            />
             <TouchableOpacity
               style={styles.modalCancelButton}
               onPress={() => setQueueModalVisible(false)}
@@ -3459,6 +3590,7 @@ const styles = StyleSheet.create({
   },
   volumeBarWrapper: { flex: 1 },
   queueNowPlaying: { color: TEXT_DIM, fontSize: 12, marginBottom: 8 },
+  queueHandle: { paddingHorizontal: 10, paddingVertical: 14 },
   queueScroll: { maxHeight: 380 },
   queueRow: {
     flexDirection: 'row',
