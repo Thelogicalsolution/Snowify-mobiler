@@ -56,6 +56,7 @@ import {
   Settings as SettingsIcon,
   Moon,
   Share2,
+  Clock,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -91,6 +92,7 @@ import {
   savePlaybackPosition,
   clearSession,
 } from './SessionStore';
+import { loadHistory, saveHistory } from './HistoryStore';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -127,6 +129,8 @@ const PANEL_COLOR_DARKEN = 0.45;
 // valid for hours; this is deliberately conservative).
 const RESOLVE_CACHE_TTL_MS = 15 * 60 * 1000;
 const RESOLVE_CACHE_MAX = 10;
+// How many songs the Recently played list keeps.
+const HISTORY_MAX = 50;
 // If the native queue is expected to move on by itself but the transition
 // event does not arrive in time, fall back to advancing from JS.
 const END_WATCHDOG_MS = 4000;
@@ -653,6 +657,32 @@ function AppContent() {
   const [sleepMinutesLeft, setSleepMinutesLeft] = useState(0);
   const [sleepModalVisible, setSleepModalVisible] = useState(false);
 
+  const [history, setHistory] = useState<Track[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const historyText =
+    settings.language === 'uk'
+      ? {
+          title: 'Нещодавно прослухані',
+          clear: 'Очистити історію',
+          clearDesc: 'Очищає список нещодавно прослуханих',
+          button: 'Очистити',
+        }
+      : {
+          title: 'Recently played',
+          clear: 'Clear play history',
+          clearDesc: 'Empties the Recently played list',
+          button: 'Clear',
+        };
+
+  function recordHistory(track: Track) {
+    setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
+  }
+
+  function handleClearHistory() {
+    logDebug('Play history cleared');
+    setHistory([]);
+  }
+
   const t = STRINGS[settings.language];
 
   const playing = useIsPlaying();
@@ -971,6 +1001,20 @@ function AppContent() {
   }, [downloads, downloadsLoaded]);
 
   useEffect(() => {
+    loadHistory().then(h => {
+      setHistory(prev =>
+        [...prev, ...h.filter(x => !prev.some(p => p.url === x.url))].slice(0, HISTORY_MAX),
+      );
+      setHistoryLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!historyLoaded) return;
+    saveHistory(history);
+  }, [history, historyLoaded]);
+
+  useEffect(() => {
     if (!playerSetupDone) return;
     TrackPlayer.setVolume(volume);
   }, [volume]);
@@ -1065,6 +1109,8 @@ function AppContent() {
       ? t.likedSongs
       : viewingPlaylistId === 'downloaded'
       ? t.downloaded
+      : viewingPlaylistId === 'history'
+      ? historyText.title
       : playlists.find(p => p.id === viewingPlaylistId)?.name ?? '';
 
   const viewingPlaylistTracks: Track[] =
@@ -1072,6 +1118,8 @@ function AppContent() {
       ? likedSongs
       : viewingPlaylistId === 'downloaded'
       ? downloads.map(d => ({ url: d.url, name: d.name, thumbnailUrl: d.thumbnailUrl }))
+      : viewingPlaylistId === 'history'
+      ? history
       : playlists.find(p => p.id === viewingPlaylistId)?.tracks ?? [];
 
   // Only real user playlists (not the virtual Liked/Downloaded ones) can
@@ -1080,7 +1128,8 @@ function AppContent() {
     view === 'playlist' &&
     viewingPlaylistId &&
     viewingPlaylistId !== 'liked' &&
-    viewingPlaylistId !== 'downloaded'
+    viewingPlaylistId !== 'downloaded' &&
+    viewingPlaylistId !== 'history'
       ? viewingPlaylistId
       : null;
 
@@ -1238,6 +1287,7 @@ function AppContent() {
 
       setQueueIndex(idx);
       setNowPlaying(s.queue[idx]);
+      recordHistory(s.queue[idx]);
       if (s.shuffleOn) {
         const pos =
           queued && queued.url === url && queued.shufflePos !== null
@@ -1707,6 +1757,7 @@ function AppContent() {
       setQueue(list);
       setQueueIndex(index);
       setNowPlaying(item);
+      recordHistory(item);
       logDebug(
         offline
           ? `Playing offline: ${item.name}`
@@ -1926,6 +1977,7 @@ function AppContent() {
           setLikedSongs([]);
           setPlaylists([]);
           setDownloads([]);
+          setHistory([]);
           setSettings(DEFAULT_SETTINGS);
           logDebug('All data reset by user');
         },
@@ -2076,6 +2128,20 @@ function AppContent() {
                       <Text style={styles.trackTitle}>{t.likedSongs}</Text>
                       <Text style={styles.playlistSubtitle}>
                         {t.songsCount(likedSongs.length)}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.playlistRow}
+                    onPress={() => openPlaylistView('history')}
+                  >
+                    <View style={styles.playlistIcon}>
+                      <Clock size={20} color={resolvedAccent} />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>{historyText.title}</Text>
+                      <Text style={styles.playlistSubtitle}>
+                        {t.songsCount(history.length)}
                       </Text>
                     </View>
                   </TouchableOpacity>
@@ -2240,6 +2306,18 @@ function AppContent() {
               </SettingsSection>
 
               <SettingsSection title={t.sectionData} titleColor={resolvedAccent}>
+                <SettingsRow
+                  label={historyText.clear}
+                  description={historyText.clearDesc}
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsDangerButton}
+                      onPress={handleClearHistory}
+                    >
+                      <Text style={styles.settingsDangerButtonText}>{historyText.button}</Text>
+                    </TouchableOpacity>
+                  }
+                />
                 <SettingsRow
                   label={t.resetAllData}
                   description={t.resetAllDataDesc}

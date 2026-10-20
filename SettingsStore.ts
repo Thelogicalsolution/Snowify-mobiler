@@ -49,6 +49,7 @@ export async function resetAllData(): Promise<string> {
     'snowify_downloads',
     'snowify_session',
     'snowify_session_position',
+    'snowify_history',
     SETTINGS_KEY,
   ];
   const failures: string[] = [];
