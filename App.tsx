@@ -9,6 +9,7 @@ import {
   AppState,
   Alert,
   Animated,
+  BackHandler,
   FlatList,
   Image,
   Modal,
@@ -62,6 +63,7 @@ import {
   List,
   X,
   Menu as GripIcon,
+  Check,
   Download,
 } from 'lucide-react-native';
 import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
@@ -789,6 +791,9 @@ function AppContent() {
   const [sleepModalVisible, setSleepModalVisible] = useState(false);
 
   const [queueModalVisible, setQueueModalVisible] = useState(false);
+  const [selected, setSelected] = useState<Track[]>([]);
+  const [bulkPlaylistVisible, setBulkPlaylistVisible] = useState(false);
+  const [bulkNewName, setBulkNewName] = useState('');
   const [history, setHistory] = useState<Track[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const historyText =
@@ -1072,6 +1077,118 @@ function AppContent() {
     setShuffleOrder(newOrder);
     setShufflePos(Math.max(0, newPos));
   }
+
+  const selectText =
+    settings.language === 'uk'
+      ? {
+          count: (n: number) => `Вибрано: ${n}`,
+          all: 'Усі',
+          addedToPlaylist: (n: number, name: string) => `Додано ${n} до «${name}»`,
+          downloading: (n: number) => `Завантаження: ${n}…`,
+          downloadsDone: 'Завантаження завершено',
+          allDownloaded: 'Усе вже завантажено',
+          queued: (n: number) => `Додано до черги: ${n}`,
+        }
+      : {
+          count: (n: number) => `${n} selected`,
+          all: 'All',
+          addedToPlaylist: (n: number, name: string) => `Added ${n} to "${name}"`,
+          downloading: (n: number) => `Downloading ${n} songs…`,
+          downloadsDone: 'Downloads finished',
+          allDownloaded: 'Already downloaded',
+          queued: (n: number) => `Added ${n} to the queue`,
+        };
+
+  function isSelected(url: string): boolean {
+    return selected.some(s => s.url === url);
+  }
+
+  function toggleSelect(track: Track) {
+    setSelected(prev =>
+      prev.some(s => s.url === track.url)
+        ? prev.filter(s => s.url !== track.url)
+        : [...prev, track],
+    );
+  }
+
+  function toggleSelectAll() {
+    const list = view === 'search' ? results : viewingPlaylistTracks;
+    setSelected(prev => (prev.length >= list.length ? [] : [...list]));
+  }
+
+  function bulkAddToPlaylist(playlistId: string) {
+    const pl = playlists.find(p => p.id === playlistId);
+    if (!pl) return;
+    const fresh = selected.filter(s => !pl.tracks.some(x => x.url === s.url));
+    setPlaylists(prev =>
+      prev.map(p =>
+        p.id === playlistId
+          ? { ...p, tracks: [...p.tracks, ...fresh.filter(f => !p.tracks.some(x => x.url === f.url))] }
+          : p,
+      ),
+    );
+    logDebug(`Selection: added ${fresh.length} of ${selected.length} to playlist "${pl.name}"`);
+    ToastAndroid.show(selectText.addedToPlaylist(fresh.length, pl.name), ToastAndroid.SHORT);
+    setBulkPlaylistVisible(false);
+    setSelected([]);
+  }
+
+  function bulkCreatePlaylist() {
+    const name = bulkNewName.trim() || t.myPlaylist;
+    const id = makePlaylistId();
+    setPlaylists(prev => [...prev, { id, name, tracks: [...selected] }]);
+    logDebug(`Selection: created playlist "${name}" with ${selected.length} songs`);
+    ToastAndroid.show(selectText.addedToPlaylist(selected.length, name), ToastAndroid.SHORT);
+    setBulkPlaylistVisible(false);
+    setBulkNewName('');
+    setSelected([]);
+  }
+
+  async function bulkDownload() {
+    const tracks = selected.filter(s => !downloads.some(d => d.url === s.url));
+    setSelected([]);
+    if (tracks.length === 0) {
+      ToastAndroid.show(selectText.allDownloaded, ToastAndroid.SHORT);
+      return;
+    }
+    logDebug(`Selection: downloading ${tracks.length} songs`);
+    ToastAndroid.show(selectText.downloading(tracks.length), ToastAndroid.LONG);
+    for (const tr of tracks) {
+      await handleDownloadTrack(tr);
+    }
+    logDebug('Selection: downloads finished');
+    ToastAndroid.show(selectText.downloadsDone, ToastAndroid.SHORT);
+  }
+
+  function bulkAddToQueue() {
+    if (queue.length === 0) {
+      logDebug(`Selection: nothing playing, starting ${selected.length} songs`);
+      playAtIndex(selected, 0, true);
+      setSelected([]);
+      return;
+    }
+    const fresh = selected.filter(s => !queue.some(q => q.url === s.url));
+    if (fresh.length === 0) {
+      Alert.alert(queueText.alreadyTitle, queueText.alreadyMessage);
+      return;
+    }
+    const base = queue.length;
+    setQueue([...queue, ...fresh]);
+    setShuffleOrder([...shuffleOrder, ...fresh.map((_, k) => base + k)]);
+    logDebug(`Selection: added ${fresh.length} songs to the queue`);
+    ToastAndroid.show(selectText.queued(fresh.length), ToastAndroid.SHORT);
+    setSelected([]);
+  }
+
+  // Android back button leaves selection mode.
+  useEffect(() => {
+    if (selected.length === 0) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setSelected([]);
+      return true;
+    });
+    return () => sub.remove();
+  }, [selected.length]);
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -1833,6 +1950,7 @@ function AppContent() {
   function changeView(newView: ViewName) {
     if (newView === view) return;
     logDebug(`View: ${view} -> ${newView}`);
+    setSelected([]);
 
     if (!settings.animationsEnabled) {
       setView(newView);
@@ -2411,10 +2529,24 @@ function AppContent() {
       <TouchableOpacity
         key={item.url}
         style={styles.trackRow}
-        onPress={() => playAtIndex(list, index, true)}
+        onPress={() =>
+          selected.length > 0 ? toggleSelect(item) : playAtIndex(list, index, true)
+        }
+        onLongPress={() => toggleSelect(item)}
         disabled={loadingTrack === item.url}
       >
-        <Text style={styles.trackIndex}>{index + 1}</Text>
+        {selected.length > 0 ? (
+          <View
+            style={[
+              styles.selectBox,
+              isSelected(item.url) && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+            ]}
+          >
+            {isSelected(item.url) && <Check size={12} color="#FFFFFF" />}
+          </View>
+        ) : (
+          <Text style={styles.trackIndex}>{index + 1}</Text>
+        )}
         {item.thumbnailUrl ? (
           <Image source={{ uri: item.thumbnailUrl }} style={styles.trackArt} />
         ) : (
@@ -2425,7 +2557,7 @@ function AppContent() {
             {item.name}
           </Text>
         </View>
-        {loadingTrack === item.url ? (
+        {selected.length > 0 ? null : loadingTrack === item.url ? (
           <ActivityIndicator color={resolvedAccent} size="small" />
         ) : (
           <View style={styles.rowActions}>
@@ -3343,6 +3475,71 @@ function AppContent() {
           </View>
         </View>
       </Modal>
+    {selected.length > 0 && (
+        <View style={styles.selectionBar}>
+          <TouchableOpacity hitSlop={10} onPress={() => setSelected([])}>
+            <X size={20} color="#FFFFFF" />
+          </TouchableOpacity>
+          <Text style={styles.selectionCount}>{selectText.count(selected.length)}</Text>
+          <TouchableOpacity hitSlop={10} onPress={toggleSelectAll}>
+            <Text style={styles.selectionAll}>{selectText.all}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity hitSlop={10} onPress={() => setBulkPlaylistVisible(true)}>
+            <Music size={20} color={resolvedAccent} />
+          </TouchableOpacity>
+          <TouchableOpacity hitSlop={10} onPress={bulkDownload}>
+            <Download size={20} color={resolvedAccent} />
+          </TouchableOpacity>
+          <TouchableOpacity hitSlop={10} onPress={bulkAddToQueue}>
+            <List size={20} color={resolvedAccent} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <Modal
+        visible={bulkPlaylistVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBulkPlaylistVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t.addToPlaylist}</Text>
+            <ScrollView style={styles.modalScroll}>
+              {playlists.length === 0 && (
+                <Text style={styles.modalEmptyText}>{t.noPlaylistsYet}</Text>
+              )}
+              {playlists.map(p => (
+                <TouchableOpacity
+                  key={p.id}
+                  style={styles.modalRow}
+                  onPress={() => bulkAddToPlaylist(p.id)}
+                >
+                  <Text style={styles.modalRowText}>{p.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TextInput
+              style={styles.modalInput}
+              value={bulkNewName}
+              onChangeText={setBulkNewName}
+              placeholder={t.myPlaylist}
+              placeholderTextColor={TEXT_DIM}
+            />
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity onPress={() => setBulkPlaylistVisible(false)}>
+                <Text style={styles.modalCancelText}>{t.cancel}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalOkButton, { backgroundColor: resolvedAccent }]}
+                onPress={bulkCreatePlaylist}
+              >
+                <Text style={styles.modalOkText}>{t.createButton}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </AnimatedSafeAreaView>
   );
 }
@@ -3600,6 +3797,34 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  selectBox: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: TEXT_DIM,
+    marginRight: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectionBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    gap: 18,
+    zIndex: 20,
+    elevation: 8,
+    backgroundColor: CARD,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  selectionCount: { flex: 1, color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  selectionAll: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
   queueNowPlaying: { color: TEXT_DIM, fontSize: 12, marginBottom: 8 },
   queueHandle: { paddingHorizontal: 10, paddingVertical: 14 },
   queueScroll: { maxHeight: 380 },
