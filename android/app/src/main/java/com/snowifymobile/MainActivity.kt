@@ -1,5 +1,9 @@
 package com.snowifymobile
 
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -19,4 +23,16 @@ class MainActivity : ReactActivity() {
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  // Hide the navigation buttons; swiping up from the bottom edge shows them again for a moment.
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) hideNavigationBar()
+  }
+
+  private fun hideNavigationBar() {
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    controller.hide(WindowInsetsCompat.Type.navigationBars())
+  }
 }
