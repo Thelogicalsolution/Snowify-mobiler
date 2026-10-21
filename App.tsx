@@ -1815,6 +1815,21 @@ function AppContent() {
     };
   }, [query]);
 
+  const fadeInAfterCommitRef = useRef(false);
+  useEffect(() => {
+    if (!fadeInAfterCommitRef.current) return;
+    fadeInAfterCommitRef.current = false;
+    // one more frame, so the new screen is on screen at opacity 0 before it fades in
+    const id = requestAnimationFrame(() => {
+      Animated.timing(viewOpacity, {
+        toValue: 1,
+        duration: 150,
+        useNativeDriver: true,
+      }).start();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [view]);
+
   function changeView(newView: ViewName) {
     if (newView === view) return;
     logDebug(`View: ${view} -> ${newView}`);
@@ -1830,12 +1845,8 @@ function AppContent() {
       duration: 120,
       useNativeDriver: true,
     }).start(() => {
+      fadeInAfterCommitRef.current = true;
       setView(newView);
-      Animated.timing(viewOpacity, {
-        toValue: 1,
-        duration: 150,
-        useNativeDriver: true,
-      }).start();
     });
   }
 
