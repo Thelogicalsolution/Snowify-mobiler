@@ -24,7 +24,7 @@ class MainActivity : ReactActivity() {
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
 
-  // Hide the navigation buttons; swiping up from the bottom edge shows them again for a moment.
+  // Hide the status bar and navigation buttons; swiping from the top or bottom edge shows them again for a moment.
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
     if (hasFocus) hideNavigationBar()
@@ -33,6 +33,6 @@ class MainActivity : ReactActivity() {
   private fun hideNavigationBar() {
     val controller = WindowCompat.getInsetsController(window, window.decorView)
     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-    controller.hide(WindowInsetsCompat.Type.navigationBars())
+    controller.hide(WindowInsetsCompat.Type.systemBars())
   }
 }
