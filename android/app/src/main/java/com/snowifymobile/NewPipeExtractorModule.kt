@@ -259,4 +259,21 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    // True when the active network is Wi-Fi or Ethernet; false on mobile data or when offline.
+    @ReactMethod
+    fun isOnWifi(promise: Promise) {
+        try {
+            val cm = reactApplicationContext.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val network = cm.activeNetwork
+            val caps = if (network != null) cm.getNetworkCapabilities(network) else null
+            val onWifi = caps != null && (
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+            )
+            promise.resolve(onWifi)
+        } catch (e: Exception) {
+            promise.reject("NETWORK_ERROR", e.message, e)
+        }
+    }
 }

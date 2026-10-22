@@ -66,7 +66,7 @@ import {
   Check,
   Download,
 } from 'lucide-react-native';
-import { searchVideos, getStreamUrl, getRelatedStreams, extractPalette, PaletteSwatch } from './NewPipeBridge';
+import { searchVideos, getStreamUrl, getRelatedStreams, isOnWifi, extractPalette, PaletteSwatch } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -1146,6 +1146,7 @@ function AppContent() {
 
   async function bulkDownload() {
     const tracks = selected.filter(s => !downloads.some(d => d.url === s.url));
+    if (tracks.length > 0 && !(await downloadsAllowed())) return;
     setSelected([]);
     if (tracks.length === 0) {
       ToastAndroid.show(selectText.allDownloaded, ToastAndroid.SHORT);
@@ -2037,8 +2038,38 @@ function AppContent() {
     return downloads.find(d => d.url === url);
   }
 
+  const wifiText =
+    settings.language === 'uk'
+      ? {
+          label: 'Завантаження лише через Wi-Fi',
+          desc: 'Не завантажувати пісні через мобільні дані',
+          blocked: 'Підключіться до Wi-Fi, щоб завантажувати',
+        }
+      : {
+          label: 'Wi-Fi only downloads',
+          desc: 'Do not download songs on mobile data',
+          blocked: 'Connect to Wi-Fi to download (Wi-Fi only is on)',
+        };
+
+  // True when downloads may start: the setting is off, or the phone is on Wi-Fi.
+  async function downloadsAllowed(): Promise<boolean> {
+    if (!settings.wifiOnlyDownloads) return true;
+    let onWifi = true;
+    try {
+      onWifi = await isOnWifi();
+    } catch (e: any) {
+      logDebug(`Wi-Fi check failed (${e?.message ?? e}); allowing the download`);
+    }
+    if (!onWifi) {
+      logDebug('Download blocked: Wi-Fi only is on and the phone is not on Wi-Fi');
+      ToastAndroid.show(wifiText.blocked, ToastAndroid.LONG);
+    }
+    return onWifi;
+  }
+
   async function handleDownloadTrack(item: Track) {
     if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
+    if (!(await downloadsAllowed())) return;
 
     logDebug(`Download started: ${item.name}`);
     setDownloadingUrls(prev => {
@@ -2907,6 +2938,18 @@ function AppContent() {
               </SettingsSection>
 
               <SettingsSection title={t.sectionData} titleColor={resolvedAccent}>
+                <SettingsRow
+                  label={wifiText.label}
+                  description={wifiText.desc}
+                  control={
+                    <Switch
+                      value={settings.wifiOnlyDownloads}
+                      onValueChange={v => updateSetting('wifiOnlyDownloads', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
                 <SettingsRow
                   label={backupText.exportLabel}
                   description={backupText.exportDesc}

@@ -11,6 +11,7 @@ export interface AppSettings {
   language: AppLanguage;
   dynamicTheme: boolean;
   relatedSongs: boolean;
+  wifiOnlyDownloads: boolean;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: 'en',
   dynamicTheme: false,
   relatedSongs: true,
+  wifiOnlyDownloads: false,
 };
 
 export async function loadSettings(): Promise<AppSettings> {

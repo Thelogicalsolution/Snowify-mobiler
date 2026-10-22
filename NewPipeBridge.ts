@@ -49,3 +49,8 @@ export async function extractPalette(imageUrl: string): Promise<PaletteSwatch[]>
 export async function getRelatedStreams(videoUrl: string): Promise<SearchResult[]> {
   return NewPipeExtractorModule.getRelatedStreams(videoUrl);
 }
+
+// True when the phone is on Wi-Fi (or Ethernet); false on mobile data or offline.
+export async function isOnWifi(): Promise<boolean> {
+  return NewPipeExtractorModule.isOnWifi();
+}
