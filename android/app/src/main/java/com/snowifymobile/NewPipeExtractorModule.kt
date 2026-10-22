@@ -222,4 +222,41 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    // The songs/videos YouTube suggests after the given one ("up next").
+    // Only regular items between 1 and 15 minutes are returned, which skips
+    // live streams (duration -1), very short clips and long mixes. If a
+    // music.youtube.com link yields nothing, the same video is retried on
+    // www.youtube.com.
+    @ReactMethod
+    fun getRelatedStreams(videoUrl: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val youtubeService = ServiceList.YouTube
+
+                fun collect(url: String): List<StreamInfoItem> =
+                    StreamInfo.getInfo(youtubeService, url)
+                        .relatedItems
+                        .filterIsInstance<StreamInfoItem>()
+                        .filter { it.duration.toLong() in 60L..900L }
+
+                var items = collect(videoUrl)
+                if (items.isEmpty() && videoUrl.contains("music.youtube.com")) {
+                    items = collect(videoUrl.replace("music.youtube.com", "www.youtube.com"))
+                }
+
+                val results: WritableArray = Arguments.createArray()
+                for (item in items.distinctBy { it.url }) {
+                    val map: WritableMap = Arguments.createMap()
+                    map.putString("url", item.url)
+                    map.putString("name", item.name)
+                    map.putString("thumbnailUrl", item.thumbnails.firstOrNull()?.url ?: "")
+                    results.pushMap(map)
+                }
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("RELATED_ERROR", e.message, e)
+            }
+        }
+    }
 }

@@ -66,7 +66,7 @@ import {
   Check,
   Download,
 } from 'lucide-react-native';
-import { searchVideos, getStreamUrl, extractPalette, PaletteSwatch } from './NewPipeBridge';
+import { searchVideos, getStreamUrl, getRelatedStreams, extractPalette, PaletteSwatch } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -1189,6 +1189,53 @@ function AppContent() {
     });
     return () => sub.remove();
   }, [selected.length]);
+
+  const relatedText =
+    settings.language === 'uk'
+      ? { label: 'Схожі пісні', desc: 'Коли черга закінчується, продовжувати схожими піснями' }
+      : { label: 'Suggested songs', desc: 'When the queue ends, keep going with similar songs' };
+
+  // When the last song of the queue starts, fetch related songs and append them,
+  // so playback goes on (and the next track gets pre-queued) instead of stopping.
+  const relatedFetchedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!settings.relatedSongs || !settings.autoplay || repeatMode !== 'off') return;
+    if (!nowPlaying || queue.length === 0) return;
+    const atEnd = shuffleOn
+      ? shufflePos >= shuffleOrder.length - 1
+      : queueIndex >= queue.length - 1;
+    if (!atEnd) return;
+    const url = nowPlaying.url;
+    if (relatedFetchedForRef.current === url) return;
+    relatedFetchedForRef.current = url;
+    logDebug(`Related: queue ends on "${nowPlaying.name}", fetching suggestions`);
+    getRelatedStreams(url)
+      .then(found => {
+        const s = playbackStateRef.current;
+        const current = s.queue[s.queueIndex];
+        if (!current || current.url !== url) return;
+        const fresh = found.filter(f => !s.queue.some(q => q.url === f.url)).slice(0, 10);
+        if (fresh.length === 0) {
+          logDebug(`Related: nothing new to add (YouTube returned ${found.length})`);
+          return;
+        }
+        const base = s.queue.length;
+        setQueue([...s.queue, ...fresh]);
+        setShuffleOrder([...s.shuffleOrder, ...fresh.map((_, k) => base + k)]);
+        logDebug(`Related: added ${fresh.length} suggested songs`);
+      })
+      .catch((e: any) => logDebug(`Related: fetch failed: ${e?.message ?? e}`));
+  }, [
+    nowPlaying?.url,
+    queue.length,
+    queueIndex,
+    shuffleOn,
+    shufflePos,
+    shuffleOrder.length,
+    repeatMode,
+    settings.autoplay,
+    settings.relatedSongs,
+  ]);
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -2779,6 +2826,18 @@ function AppContent() {
                     <Switch
                       value={settings.autoplay}
                       onValueChange={v => updateSetting('autoplay', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={relatedText.label}
+                  description={relatedText.desc}
+                  control={
+                    <Switch
+                      value={settings.relatedSongs}
+                      onValueChange={v => updateSetting('relatedSongs', v)}
                       trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />

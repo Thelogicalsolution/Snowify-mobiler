@@ -44,3 +44,8 @@ export async function getStreamUrl(
 export async function extractPalette(imageUrl: string): Promise<PaletteSwatch[]> {
   return NewPipeExtractorModule.extractPalette(imageUrl);
 }
+
+// Songs YouTube suggests after the given one (1-15 minutes, no live streams).
+export async function getRelatedStreams(videoUrl: string): Promise<SearchResult[]> {
+  return NewPipeExtractorModule.getRelatedStreams(videoUrl);
+}

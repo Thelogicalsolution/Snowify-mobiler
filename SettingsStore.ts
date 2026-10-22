@@ -10,6 +10,7 @@ export interface AppSettings {
   developerMode: boolean;
   language: AppLanguage;
   dynamicTheme: boolean;
+  relatedSongs: boolean;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -21,6 +22,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   developerMode: false,
   language: 'en',
   dynamicTheme: false,
+  relatedSongs: true,
 };
 
 export async function loadSettings(): Promise<AppSettings> {
