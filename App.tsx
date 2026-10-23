@@ -791,6 +791,8 @@ function AppContent() {
   const [sleepModalVisible, setSleepModalVisible] = useState(false);
 
   const [queueModalVisible, setQueueModalVisible] = useState(false);
+  const [sortMode, setSortMode] = useState<'default' | 'reverse' | 'az' | 'za'>('default');
+  const [filterText, setFilterText] = useState('');
   const [selected, setSelected] = useState<Track[]>([]);
   const [bulkPlaylistVisible, setBulkPlaylistVisible] = useState(false);
   const [bulkNewName, setBulkNewName] = useState('');
@@ -1112,7 +1114,7 @@ function AppContent() {
   }
 
   function toggleSelectAll() {
-    const list = view === 'search' ? results : viewingPlaylistTracks;
+    const list = view === 'search' ? results : shownTracks;
     setSelected(prev => (prev.length >= list.length ? [] : [...list]));
   }
 
@@ -1686,6 +1688,42 @@ function AppContent() {
       ? history
       : playlists.find(p => p.id === viewingPlaylistId)?.tracks ?? [];
 
+  const sortText =
+    settings.language === 'uk'
+      ? {
+          filter: 'Фільтр пісень',
+          modes:
+            viewingPlaylistId === 'history'
+              ? { default: 'Нещодавні', reverse: 'Старіші', az: 'А–Я', za: 'Я–А' }
+              : { default: 'Як додано', reverse: 'Спочатку нові', az: 'А–Я', za: 'Я–А' },
+        }
+      : {
+          filter: 'Filter songs',
+          modes:
+            viewingPlaylistId === 'history'
+              ? { default: 'Most recent', reverse: 'Oldest', az: 'A–Z', za: 'Z–A' }
+              : { default: 'Added order', reverse: 'Newest added', az: 'A–Z', za: 'Z–A' },
+        };
+
+  // The list actually shown on the playlist screen: filtered, then sorted.
+  let shownTracks: Track[] = viewingPlaylistTracks;
+  const filterNeedle = filterText.trim().toLowerCase();
+  if (filterNeedle) {
+    shownTracks = shownTracks.filter(tr => tr.name.toLowerCase().includes(filterNeedle));
+  }
+  if (sortMode === 'reverse') {
+    shownTracks = [...shownTracks].reverse();
+  } else if (sortMode === 'az') {
+    shownTracks = [...shownTracks].sort((a, b) => a.name.localeCompare(b.name));
+  } else if (sortMode === 'za') {
+    shownTracks = [...shownTracks].sort((a, b) => b.name.localeCompare(a.name));
+  }
+  const sortLabel = sortText.modes[sortMode];
+
+  function cycleSort() {
+    setSortMode(m => (m === 'default' ? 'reverse' : m === 'reverse' ? 'az' : m === 'az' ? 'za' : 'default'));
+  }
+
   // Only real user playlists (not the virtual Liked/Downloaded ones) can
   // have a track removed from them.
   const removablePlaylistId =
@@ -2196,7 +2234,9 @@ function AppContent() {
         : id === 'downloaded'
         ? t.downloaded
         : playlists.find(p => p.id === id)?.name ?? id;
-    logDebug(`Opened playlist: ${name}`);
+    logDebug(Opened playlist: ${name});
+    setSortMode('default');
+    setFilterText('');
     setViewingPlaylistId(id);
     changeView('playlist');
   }
@@ -2819,15 +2859,27 @@ function AppContent() {
                 {viewingPlaylistName}
               </Text>
             </View>
+            <View style={styles.listToolsRow}>
+              <TextInput
+                style={styles.filterInput}
+                value={filterText}
+                onChangeText={setFilterText}
+                placeholder={sortText.filter}
+                placeholderTextColor={TEXT_DIM}
+              />
+              <TouchableOpacity style={styles.sortPill} onPress={cycleSort}>
+                <Text style={styles.sortPillText}>{sortLabel}</Text>
+              </TouchableOpacity>
+            </View>
             <FlatList
-              data={viewingPlaylistTracks}
+              data={shownTracks}
               keyExtractor={tr => tr.url}
               contentContainerStyle={[
                 styles.listContent,
                 { paddingBottom: bottomPad },
               ]}
               renderItem={({ item, index }) =>
-                renderTrackRow(item, index, viewingPlaylistTracks)
+                renderTrackRow(item, index, shownTracks)
               }
               ListEmptyComponent={
                 <Text style={styles.emptyText}>{t.noSongsYet}</Text>
@@ -3899,6 +3951,31 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  listToolsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    gap: 10,
+  },
+  filterInput: {
+    flex: 1,
+    backgroundColor: CARD,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  sortPill: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: CARD,
+  },
+  sortPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '600' },
   selectBox: {
     width: 18,
     height: 18,
