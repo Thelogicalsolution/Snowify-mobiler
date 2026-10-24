@@ -2234,7 +2234,7 @@ function AppContent() {
         : id === 'downloaded'
         ? t.downloaded
         : playlists.find(p => p.id === id)?.name ?? id;
-    logDebug(Opened playlist: ${name});
+    logDebug(`Opened playlist: ${name}`);
     setSortMode('default');
     setFilterText('');
     setViewingPlaylistId(id);
