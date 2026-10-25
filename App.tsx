@@ -63,6 +63,7 @@ import {
   List,
   X,
   Menu as GripIcon,
+  Mic,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -74,6 +75,7 @@ import {
   extractPalette,
   searchPlaylists,
   getPlaylistTracks,
+  getTrackMeta,
   PaletteSwatch,
   PlaylistResult,
 } from './NewPipeBridge';
@@ -110,6 +112,7 @@ import {
   clearSession,
 } from './SessionStore';
 import { loadHistory, saveHistory } from './HistoryStore';
+import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from './LyricsStore';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
@@ -1336,6 +1339,75 @@ function AppContent() {
     ToastAndroid.show(remoteText.saved, ToastAndroid.SHORT);
   }
 
+  const lyricsText =
+    settings.language === 'uk'
+      ? {
+          none: 'Текст не знайдено',
+          error: 'Не вдалося завантажити текст (перевірте інтернет)',
+          retry: 'Спробувати знову',
+          instrumental: 'Інструментальна композиція',
+          credit: 'Тексти: LRCLIB',
+        }
+      : {
+          none: 'No lyrics found',
+          error: 'Could not load lyrics (check your connection)',
+          retry: 'Try again',
+          instrumental: 'Instrumental',
+          credit: 'Lyrics: LRCLIB',
+        };
+
+  const [lyricsVisible, setLyricsVisible] = useState(false);
+  const [lyricsState, setLyricsState] = useState<'idle' | 'loading' | 'ready' | 'none' | 'error'>('idle');
+  const [lyricsData, setLyricsData] = useState<LyricsResult | null>(null);
+  const [lyricsUrl, setLyricsUrl] = useState<string | null>(null);
+  const [lyricsRetry, setLyricsRetry] = useState(0);
+  const lyricsTokenRef = useRef(0);
+  const lyricsForRef = useRef<string | null>(null);
+  const lyricsScrollRef = useRef<ScrollView>(null);
+  const lyricsLineY = useRef<{ [i: number]: number }>({});
+  const lyricsViewH = useRef(0);
+
+  // Loads the lyrics of the playing song whenever the lyrics screen is open.
+  useEffect(() => {
+    if (!lyricsVisible || !nowPlaying) return;
+    const track = nowPlaying;
+    if (lyricsForRef.current === track.url) return;
+    const token = ++lyricsTokenRef.current;
+    setLyricsState('loading');
+    setLyricsData(null);
+    lyricsLineY.current = {};
+    (async () => {
+      try {
+        let result = await loadCachedLyrics(track.url);
+        if (result) {
+          logDebug(`Lyrics: loaded from cache for "${track.name}"`);
+        } else {
+          const meta = await getTrackMeta(track.url);
+          result = await fetchLyrics(meta.title || track.name, meta.uploader || '', Number(meta.duration) || 0);
+          if (result) await saveCachedLyrics(track.url, result);
+        }
+        if (token !== lyricsTokenRef.current) return;
+        lyricsForRef.current = track.url;
+        setLyricsUrl(track.url);
+        if (result) {
+          setLyricsData(result);
+          setLyricsState('ready');
+          logDebug(
+            `Lyrics: found for "${track.name}" (${result.synced ? 'synced' : result.plain ? 'plain' : 'instrumental'})`,
+          );
+        } else {
+          setLyricsState('none');
+          logDebug(`Lyrics: none found for "${track.name}"`);
+        }
+      } catch (e: any) {
+        if (token !== lyricsTokenRef.current) return;
+        lyricsForRef.current = null;
+        setLyricsState('error');
+        logDebug(`Lyrics failed: ${e?.message ?? e}`);
+      }
+    })();
+  }, [lyricsVisible, nowPlaying?.url, lyricsRetry]);
+
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
   }
@@ -1815,6 +1887,26 @@ function AppContent() {
     shownTracks = [...shownTracks].sort((a, b) => b.name.localeCompare(a.name));
   }
   const sortLabel = sortText.modes[sortMode];
+
+  // Lyrics: which synced line is current, and scrolling it into view.
+  const showLyrics = lyricsUrl === (nowPlaying?.url ?? null);
+  let activeLyric = -1;
+  if (lyricsVisible && showLyrics && lyricsData && lyricsData.synced) {
+    const lyricPos = progress.position + 0.3;
+    for (let i = 0; i < lyricsData.synced.length; i++) {
+      if (lyricsData.synced[i].time <= lyricPos) activeLyric = i;
+      else break;
+    }
+  }
+  useEffect(() => {
+    if (!lyricsVisible || activeLyric < 0) return;
+    const y = lyricsLineY.current[activeLyric];
+    if (y === undefined) return;
+    lyricsScrollRef.current?.scrollTo({
+      y: Math.max(0, y - lyricsViewH.current / 3),
+      animated: true,
+    });
+  }, [activeLyric, lyricsVisible]);
   const libraryTabActive = view === 'library' || (view === 'playlist' && viewingPlaylistId !== 'remote');
   const searchTabActive = view === 'search' || (view === 'playlist' && viewingPlaylistId === 'remote');
 
@@ -3428,6 +3520,13 @@ function AppContent() {
                 >
                   <List size={14} color={upcoming.length > 0 ? resolvedAccent : TEXT_DIM} />
                 </TouchableOpacity>
+                <TouchableOpacity
+                  hitSlop={10}
+                  onPress={() => setLyricsVisible(true)}
+                  style={styles.sleepButton}
+                >
+                  <Mic size={14} color={TEXT_DIM} />
+                </TouchableOpacity>
                 <Volume2 size={14} color={TEXT_DIM} />
                 <View style={styles.volumeBarWrapper}>
                   <DraggableBar
@@ -3882,6 +3981,81 @@ function AppContent() {
           </View>
         </View>
       </Modal>
+    <Modal
+        visible={lyricsVisible}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setLyricsVisible(false)}
+      >
+        <View style={[styles.lyricsScreen, { backgroundColor: resolvedBg, paddingTop: insets.top + 8 }]}>
+          <View style={styles.lyricsHeader}>
+            <TouchableOpacity hitSlop={10} onPress={() => setLyricsVisible(false)}>
+              <ChevronDown size={26} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={styles.lyricsTitle} numberOfLines={1}>
+              {nowPlaying ? nowPlaying.name : ''}
+            </Text>
+          </View>
+
+          {lyricsState === 'idle' ||
+          lyricsState === 'loading' ||
+          (lyricsState === 'ready' && !showLyrics) ? (
+            <View style={styles.lyricsCenter}>
+              <ActivityIndicator color={resolvedAccent} />
+            </View>
+          ) : lyricsState === 'ready' && lyricsData ? (
+            lyricsData.synced ? (
+              <ScrollView
+                ref={lyricsScrollRef}
+                style={styles.lyricsScroll}
+                contentContainerStyle={styles.lyricsContent}
+                onLayout={e => {
+                  lyricsViewH.current = e.nativeEvent.layout.height;
+                }}
+              >
+                {lyricsData.synced.map((ln, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    activeOpacity={0.7}
+                    onLayout={e => {
+                      lyricsLineY.current[i] = e.nativeEvent.layout.y;
+                    }}
+                    onPress={() => TrackPlayer.seekTo(ln.time)}
+                  >
+                    <Text style={[styles.lyricsLine, i === activeLyric && { color: resolvedAccent }]}>
+                      {ln.text || '♪'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : lyricsData.plain ? (
+              <ScrollView style={styles.lyricsScroll} contentContainerStyle={styles.lyricsContent}>
+                <Text style={styles.lyricsPlain}>{lyricsData.plain}</Text>
+              </ScrollView>
+            ) : (
+              <View style={styles.lyricsCenter}>
+                <Text style={styles.lyricsMessage}>{lyricsText.instrumental}</Text>
+              </View>
+            )
+          ) : (
+            <View style={styles.lyricsCenter}>
+              <Text style={styles.lyricsMessage}>
+                {lyricsState === 'error' ? lyricsText.error : lyricsText.none}
+              </Text>
+              <TouchableOpacity
+                style={styles.actionPill}
+                onPress={() => {
+                  lyricsForRef.current = null;
+                  setLyricsRetry(n => n + 1);
+                }}
+              >
+                <Text style={styles.actionPillText}>{lyricsText.retry}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <Text style={styles.lyricsCredit}>{lyricsText.credit}</Text>
+        </View>
+      </Modal>
     </AnimatedSafeAreaView>
   );
 }
@@ -4139,6 +4313,34 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  lyricsScreen: { flex: 1 },
+  lyricsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  lyricsTitle: { flex: 1, color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  lyricsScroll: { flex: 1 },
+  lyricsContent: { paddingHorizontal: 24, paddingVertical: 24, paddingBottom: 140 },
+  lyricsLine: {
+    color: '#8A8A9A',
+    fontSize: 20,
+    fontWeight: '700',
+    lineHeight: 28,
+    paddingVertical: 8,
+  },
+  lyricsPlain: { color: '#FFFFFF', fontSize: 16, lineHeight: 26 },
+  lyricsCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    gap: 16,
+  },
+  lyricsMessage: { color: '#8A8A9A', fontSize: 15, textAlign: 'center' },
+  lyricsCredit: { color: '#8A8A9A', fontSize: 11, textAlign: 'center', paddingVertical: 10 },
   searchModeRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
   searchModePill: {
     borderWidth: StyleSheet.hairlineWidth,

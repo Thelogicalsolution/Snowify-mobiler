@@ -85,3 +85,14 @@ export async function getPlaylistTracks(
 ): Promise<PlaylistTracks> {
   return NewPipeExtractorModule.getPlaylistTracks(playlistUrl, maxItems);
 }
+
+export type TrackMeta = {
+  title: string;
+  uploader: string;
+  duration: number;
+};
+
+// Title, uploader (usually the artist) and length in seconds of a video.
+export async function getTrackMeta(videoUrl: string): Promise<TrackMeta> {
+  return NewPipeExtractorModule.getTrackMeta(videoUrl);
+}

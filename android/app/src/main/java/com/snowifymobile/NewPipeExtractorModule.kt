@@ -357,4 +357,21 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    // Title, uploader (usually the artist) and length in seconds of a video - used to match lyrics.
+    @ReactMethod
+    fun getTrackMeta(videoUrl: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val info = StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                val map: WritableMap = Arguments.createMap()
+                map.putString("title", info.name)
+                map.putString("uploader", info.uploaderName ?: "")
+                map.putDouble("duration", info.duration.toDouble())
+                promise.resolve(map)
+            } catch (e: Exception) {
+                promise.reject("META_ERROR", e.message, e)
+            }
+        }
+    }
 }
