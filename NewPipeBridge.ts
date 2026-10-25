@@ -54,3 +54,34 @@ export async function getRelatedStreams(videoUrl: string): Promise<SearchResult[
 export async function isOnWifi(): Promise<boolean> {
   return NewPipeExtractorModule.isOnWifi();
 }
+
+export type PlaylistResult = {
+  url: string;
+  name: string;
+  thumbnailUrl: string;
+  uploader: string;
+  count: number;
+};
+
+export type PlaylistTracks = {
+  name: string;
+  uploader: string;
+  count: number;
+  tracks: SearchResult[];
+};
+
+// YouTube playlists and mixes matching the query.
+export async function searchPlaylists(query: string): Promise<PlaylistResult[]> {
+  if (!query.trim()) {
+    return [];
+  }
+  return NewPipeExtractorModule.searchPlaylists(query);
+}
+
+// The songs of a playlist or mix (up to maxItems).
+export async function getPlaylistTracks(
+  playlistUrl: string,
+  maxItems: number = 300,
+): Promise<PlaylistTracks> {
+  return NewPipeExtractorModule.getPlaylistTracks(playlistUrl, maxItems);
+}

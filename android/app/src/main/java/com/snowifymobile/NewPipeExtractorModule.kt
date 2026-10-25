@@ -19,6 +19,9 @@ import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.Page
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.localization.ContentCountry
@@ -274,6 +277,84 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             promise.resolve(onWifi)
         } catch (e: Exception) {
             promise.reject("NETWORK_ERROR", e.message, e)
+        }
+    }
+
+    // Playlist search: regular YouTube playlists and mixes ("playlists" filter).
+    @ReactMethod
+    fun searchPlaylists(query: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val extractor = ServiceList.YouTube.getSearchExtractor(
+                    query,
+                    listOf("playlists"),
+                    ""
+                )
+                extractor.fetchPage()
+
+                val results: WritableArray = Arguments.createArray()
+                for (item in extractor.initialPage.items) {
+                    if (item !is PlaylistInfoItem) continue
+                    val map: WritableMap = Arguments.createMap()
+                    map.putString("url", item.url)
+                    map.putString("name", item.name)
+                    map.putString("thumbnailUrl", item.thumbnails.firstOrNull()?.url ?: "")
+                    map.putString("uploader", item.uploaderName ?: "")
+                    map.putDouble("count", item.streamCount.toDouble())
+                    results.pushMap(map)
+                }
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("PLAYLIST_SEARCH_ERROR", e.message, e)
+            }
+        }
+    }
+
+    // The songs of a YouTube playlist or mix, following pages until maxItems is reached.
+    // Mixes are endless, so they are simply cut at maxItems (or at what YouTube returns).
+    @ReactMethod
+    fun getPlaylistTracks(playlistUrl: String, maxItems: Int, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val youtubeService = ServiceList.YouTube
+                val info = PlaylistInfo.getInfo(youtubeService, playlistUrl)
+
+                val items = ArrayList<StreamInfoItem>()
+                items.addAll(info.relatedItems.filterIsInstance<StreamInfoItem>())
+
+                var next: Page? = info.nextPage
+                var pages = 0
+                while (items.size < maxItems && pages < 10) {
+                    val current = next ?: break
+                    val page = PlaylistInfo.getMoreItems(youtubeService, playlistUrl, current)
+                    items.addAll(page.items.filterIsInstance<StreamInfoItem>())
+                    next = page.nextPage
+                    pages++
+                }
+
+                val tracks: WritableArray = Arguments.createArray()
+                val seen = HashSet<String>()
+                var added = 0
+                for (item in items) {
+                    if (added >= maxItems) break
+                    if (!seen.add(item.url)) continue
+                    val map: WritableMap = Arguments.createMap()
+                    map.putString("url", item.url)
+                    map.putString("name", item.name)
+                    map.putString("thumbnailUrl", item.thumbnails.firstOrNull()?.url ?: "")
+                    tracks.pushMap(map)
+                    added++
+                }
+
+                val result: WritableMap = Arguments.createMap()
+                result.putString("name", info.name)
+                result.putString("uploader", info.uploaderName ?: "")
+                result.putDouble("count", info.streamCount.toDouble())
+                result.putArray("tracks", tracks)
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("PLAYLIST_ERROR", e.message, e)
+            }
         }
     }
 }

@@ -66,7 +66,17 @@ import {
   Check,
   Download,
 } from 'lucide-react-native';
-import { searchVideos, getStreamUrl, getRelatedStreams, isOnWifi, extractPalette, PaletteSwatch } from './NewPipeBridge';
+import {
+  searchVideos,
+  getStreamUrl,
+  getRelatedStreams,
+  isOnWifi,
+  extractPalette,
+  searchPlaylists,
+  getPlaylistTracks,
+  PaletteSwatch,
+  PlaylistResult,
+} from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -1240,6 +1250,92 @@ function AppContent() {
     settings.relatedSongs,
   ]);
 
+  const remoteText =
+    settings.language === 'uk'
+      ? {
+          songs: 'Пісні',
+          playlists: 'Плейлисти',
+          playAll: 'Відтворити все',
+          shuffle: 'Перемішати',
+          save: 'Зберегти',
+          saved: 'Збережено у ваші плейлисти',
+          failed: 'Не вдалося завантажити плейлист (можливо, він приватний або видалений)',
+          loading: 'Завантаження…',
+        }
+      : {
+          songs: 'Songs',
+          playlists: 'Playlists',
+          playAll: 'Play all',
+          shuffle: 'Shuffle',
+          save: 'Save',
+          saved: 'Saved to your playlists',
+          failed: 'Could not load this playlist (it may be private or removed)',
+          loading: 'Loading…',
+        };
+
+  const [searchMode, setSearchMode] = useState<'songs' | 'playlists'>('songs');
+  const [playlistResults, setPlaylistResults] = useState<PlaylistResult[]>([]);
+  const [remote, setRemote] = useState<{
+    url: string;
+    name: string;
+    uploader: string;
+    tracks: Track[];
+  }>({ url: '', name: '', uploader: '', tracks: [] });
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const remoteTokenRef = useRef(0);
+
+  function openRemotePlaylist(p: { url: string; name?: string; uploader?: string }) {
+    const token = ++remoteTokenRef.current;
+    logDebug(`Opening YouTube playlist: ${p.name ?? p.url}`);
+    setRemote({ url: p.url, name: p.name ?? '', uploader: p.uploader ?? '', tracks: [] });
+    setRemoteLoading(true);
+    setRemoteError(null);
+    setViewingPlaylistId('remote');
+    setSortMode('default');
+    setFilterText('');
+    changeView('playlist');
+    getPlaylistTracks(p.url, 300)
+      .then(res => {
+        if (token !== remoteTokenRef.current) return;
+        setRemote({
+          url: p.url,
+          name: res.name || p.name || '',
+          uploader: res.uploader || p.uploader || '',
+          tracks: res.tracks,
+        });
+        setRemoteLoading(false);
+        logDebug(`YouTube playlist loaded: ${res.tracks.length} songs`);
+      })
+      .catch((e: any) => {
+        if (token !== remoteTokenRef.current) return;
+        setRemoteLoading(false);
+        setRemoteError(remoteText.failed);
+        logDebug(`YouTube playlist failed: ${e?.message ?? e}`);
+      });
+  }
+
+  function playAllShown() {
+    if (shownTracks.length === 0) return;
+    logDebug(`Play all: ${shownTracks.length} songs`);
+    playAtIndex(shownTracks, 0, true);
+  }
+
+  function shuffleShown() {
+    if (shownTracks.length === 0) return;
+    logDebug(`Shuffle play: ${shownTracks.length} songs`);
+    setShuffleOn(true);
+    playAtIndex(shownTracks, Math.floor(Math.random() * shownTracks.length), true);
+  }
+
+  function saveRemotePlaylist() {
+    if (remote.tracks.length === 0) return;
+    const name = remote.name || t.myPlaylist;
+    setPlaylists(prev => [...prev, { id: makePlaylistId(), name, tracks: remote.tracks }]);
+    logDebug(`Saved YouTube playlist "${name}" (${remote.tracks.length} songs)`);
+    ToastAndroid.show(remoteText.saved, ToastAndroid.SHORT);
+  }
+
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
   }
@@ -1706,7 +1802,7 @@ function AppContent() {
         };
 
   // The list actually shown on the playlist screen: filtered, then sorted.
-  let shownTracks: Track[] = viewingPlaylistTracks;
+  let shownTracks: Track[] = viewingPlaylistId === 'remote' ? remote.tracks : viewingPlaylistTracks;
   const filterNeedle = filterText.trim().toLowerCase();
   if (filterNeedle) {
     shownTracks = shownTracks.filter(tr => tr.name.toLowerCase().includes(filterNeedle));
@@ -1719,6 +1815,8 @@ function AppContent() {
     shownTracks = [...shownTracks].sort((a, b) => b.name.localeCompare(a.name));
   }
   const sortLabel = sortText.modes[sortMode];
+  const libraryTabActive = view === 'library' || (view === 'playlist' && viewingPlaylistId !== 'remote');
+  const searchTabActive = view === 'search' || (view === 'playlist' && viewingPlaylistId === 'remote');
 
   function cycleSort() {
     setSortMode(m => (m === 'default' ? 'reverse' : m === 'reverse' ? 'az' : m === 'az' ? 'za' : 'default'));
@@ -1731,7 +1829,8 @@ function AppContent() {
     viewingPlaylistId &&
     viewingPlaylistId !== 'liked' &&
     viewingPlaylistId !== 'downloaded' &&
-    viewingPlaylistId !== 'history'
+    viewingPlaylistId !== 'history' &&
+    viewingPlaylistId !== 'remote'
       ? viewingPlaylistId
       : null;
 
@@ -1994,10 +2093,25 @@ function AppContent() {
     }
 
     debounceRef.current = setTimeout(async () => {
+      const typed = query.trim();
+      if (
+        /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(typed) &&
+        /[?&]list=[\w-]+/i.test(typed)
+      ) {
+        logDebug(`Playlist link pasted: ${typed}`);
+        openRemotePlaylist({ url: typed });
+        return;
+      }
       setSearching(true);
       setSearchError(null);
       logDebug(`Searching: "${query}"`);
       try {
+        if (searchMode === 'playlists') {
+          const foundPlaylists = await searchPlaylists(query);
+          setPlaylistResults(foundPlaylists);
+          logDebug(`Playlist results: ${foundPlaylists.length} for "${query}"`);
+          return;
+        }
         const found = await searchVideos(query);
         setResults(found);
         logDebug(`Search results: ${found.length} for "${query}"`);
@@ -2016,7 +2130,7 @@ function AppContent() {
         clearTimeout(debounceRef.current);
       }
     };
-  }, [query]);
+  }, [query, searchMode]);
 
   const fadeInAfterCommitRef = useRef(false);
   useEffect(() => {
@@ -2642,6 +2756,32 @@ function AppContent() {
     setDebugLogsText(getDebugLogs());
   }
 
+  function renderPlaylistRow(p: PlaylistResult) {
+    const subtitle =
+      p.count > 0
+        ? `${p.uploader ? p.uploader + ' · ' : ''}${t.songsCount(p.count)}`
+        : p.uploader;
+    return (
+      <TouchableOpacity key={p.url} style={styles.trackRow} onPress={() => openRemotePlaylist(p)}>
+        {p.thumbnailUrl ? (
+          <Image source={{ uri: p.thumbnailUrl }} style={styles.trackArt} />
+        ) : (
+          <View style={styles.trackArt} />
+        )}
+        <View style={styles.trackInfo}>
+          <Text style={styles.trackTitle} numberOfLines={2}>
+            {p.name}
+          </Text>
+          {subtitle ? (
+            <Text style={styles.playlistSubtitle} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
   function renderTrackRow(item: SearchResult, index: number, list: SearchResult[]) {
     return (
       <TouchableOpacity
@@ -2728,6 +2868,27 @@ function AppContent() {
               />
             </View>
 
+            <View style={styles.searchModeRow}>
+              <TouchableOpacity
+                style={[
+                  styles.searchModePill,
+                  searchMode === 'songs' && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+                ]}
+                onPress={() => setSearchMode('songs')}
+              >
+                <Text style={styles.searchModePillText}>{remoteText.songs}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.searchModePill,
+                  searchMode === 'playlists' && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+                ]}
+                onPress={() => setSearchMode('playlists')}
+              >
+                <Text style={styles.searchModePillText}>{remoteText.playlists}</Text>
+              </TouchableOpacity>
+            </View>
+
             {searching && (
               <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
             )}
@@ -2735,14 +2896,14 @@ function AppContent() {
             {searchError && <Text style={styles.errorText}>{searchError}</Text>}
 
             <FlatList
-              data={results}
+              data={(searchMode === 'songs' ? results : playlistResults) as any[]}
               keyExtractor={item => item.url}
               contentContainerStyle={[
                 styles.listContent,
                 { paddingBottom: bottomPad },
               ]}
               renderItem={({ item, index }) =>
-                renderTrackRow(item, index, results)
+                searchMode === 'songs' ? renderTrackRow(item, index, results) : renderPlaylistRow(item as any)
               }
               ListEmptyComponent={
                 !searching && query.trim() ? (
@@ -2852,13 +3013,40 @@ function AppContent() {
         {view === 'playlist' && viewingPlaylistId && (
           <>
             <View style={styles.playlistDetailHeader}>
-              <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
+              <TouchableOpacity\n                onPress={() => changeView(viewingPlaylistId === 'remote' ? 'search' : 'library')}\n                hitSlop={10}\n              >
                 <ChevronLeft size={24} color="#FFFFFF" />
               </TouchableOpacity>
               <Text style={styles.playlistDetailTitle} numberOfLines={1}>
-                {viewingPlaylistName}
+                {viewingPlaylistId === 'remote' ? remote.name || remoteText.loading : viewingPlaylistName}
               </Text>
             </View>
+            {shownTracks.length > 0 && (
+              <View style={styles.listActionsRow}>
+                <TouchableOpacity
+                  style={[styles.actionPill, { backgroundColor: resolvedAccent, borderColor: resolvedAccent }]}
+                  onPress={playAllShown}
+                >
+                  <Play size={14} color="#FFFFFF" fill="#FFFFFF" />
+                  <Text style={styles.actionPillText}>{remoteText.playAll}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.actionPill} onPress={shuffleShown}>
+                  <Shuffle size={14} color="#FFFFFF" />
+                  <Text style={styles.actionPillText}>{remoteText.shuffle}</Text>
+                </TouchableOpacity>
+                {viewingPlaylistId === 'remote' && (
+                  <TouchableOpacity style={styles.actionPill} onPress={saveRemotePlaylist}>
+                    <Library size={14} color="#FFFFFF" />
+                    <Text style={styles.actionPillText}>{remoteText.save}</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+            {viewingPlaylistId === 'remote' && remoteLoading && (
+              <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
+            )}
+            {viewingPlaylistId === 'remote' && remoteError && (
+              <Text style={styles.errorText}>{remoteError}</Text>
+            )}
             <View style={styles.listToolsRow}>
               <TextInput
                 style={styles.filterInput}
@@ -3261,12 +3449,12 @@ function AppContent() {
       >
         <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
           <TouchableOpacity style={styles.tabButton} onPress={() => changeView('search')}>
-            <Search size={20} color={view === 'search' ? resolvedAccent : TEXT_DIM} />
+            <Search size={20} color={searchTabActive ? resolvedAccent : TEXT_DIM} />
             <Animated.Text
               style={[
                 styles.tabLabel,
-                view === 'search' && styles.tabLabelActive,
-                view === 'search' ? { color: animatedAccentColor } : null,
+                searchTabActive && styles.tabLabelActive,
+                searchTabActive ? { color: animatedAccentColor } : null,
               ]}
             >
               {t.tabSearch}
@@ -3278,13 +3466,13 @@ function AppContent() {
           >
             <Library
               size={20}
-              color={view === 'library' || view === 'playlist' ? resolvedAccent : TEXT_DIM}
+              color={libraryTabActive ? resolvedAccent : TEXT_DIM}
             />
             <Animated.Text
               style={[
                 styles.tabLabel,
-                (view === 'library' || view === 'playlist') && styles.tabLabelActive,
-                view === 'library' || view === 'playlist'
+                (libraryTabActive) && styles.tabLabelActive,
+                libraryTabActive
                   ? { color: animatedAccentColor }
                   : null,
               ]}
@@ -3951,6 +4139,35 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  searchModeRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
+  searchModePill: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    backgroundColor: CARD,
+  },
+  searchModePillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '600' },
+  listActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  actionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: CARD,
+  },
+  actionPillText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
   listToolsRow: {
     flexDirection: 'row',
     alignItems: 'center',
