@@ -3013,7 +3013,7 @@ function AppContent() {
         {view === 'playlist' && viewingPlaylistId && (
           <>
             <View style={styles.playlistDetailHeader}>
-              <TouchableOpacity\n                onPress={() => changeView(viewingPlaylistId === 'remote' ? 'search' : 'library')}\n                hitSlop={10}\n              >
+              <TouchableOpacity onPress={() => changeView(viewingPlaylistId === 'remote' ? 'search' : 'library')} hitSlop={10}>
                 <ChevronLeft size={24} color="#FFFFFF" />
               </TouchableOpacity>
               <Text style={styles.playlistDetailTitle} numberOfLines={1}>
