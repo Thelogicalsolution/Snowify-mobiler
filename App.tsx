@@ -750,6 +750,96 @@ function QueueList({
   );
 }
 
+function NowPlayingBars({ color, active }: { color: string; active: boolean }) {
+  const bars = useRef([new Animated.Value(0.45), new Animated.Value(0.9), new Animated.Value(0.6)]).current;
+  useEffect(() => {
+    if (!active) {
+      bars.forEach(b => b.stopAnimation());
+      return;
+    }
+    const loops = bars.map((b, i) => {
+      const dur = 380 + i * 130;
+      return Animated.loop(
+        Animated.sequence([
+          Animated.timing(b, { toValue: 1, duration: dur, useNativeDriver: true }),
+          Animated.timing(b, { toValue: 0.25 + i * 0.05, duration: dur, useNativeDriver: true }),
+        ]),
+      );
+    });
+    loops.forEach(l => l.start());
+    return () => loops.forEach(l => l.stop());
+  }, [active]);
+  return (
+    <View style={styles.eqWrap}>
+      {bars.map((b, i) => (
+        <Animated.View
+          key={i}
+          style={[styles.eqBar, { backgroundColor: color, transform: [{ scaleY: b }] }]}
+        />
+      ))}
+    </View>
+  );
+}
+
+// Fades and lifts a list row in when it first appears (only the first rows, so scrolling stays calm).
+function FadeInRow({
+  index,
+  enabled,
+  children,
+}: {
+  index: number;
+  enabled: boolean;
+  children: React.ReactNode;
+}) {
+  const animate = enabled && index < 12;
+  const anim = useRef(new Animated.Value(animate ? 0 : 1)).current;
+  useEffect(() => {
+    if (!animate) return;
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 260,
+      delay: index * 28,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+  return (
+    <Animated.View
+      style={{
+        opacity: anim,
+        transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+      }}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+// Cover art that fades in once it has loaded.
+function FadeImage({
+  uri,
+  style,
+  enabled = true,
+}: {
+  uri: string;
+  style: any;
+  enabled?: boolean;
+}) {
+  const opacity = useRef(new Animated.Value(enabled ? 0 : 1)).current;
+  useEffect(() => {
+    opacity.setValue(enabled ? 0 : 1);
+  }, [uri, enabled]);
+  return (
+    <Animated.Image
+      source={{ uri }}
+      style={[style, { opacity }]}
+      onLoad={() => {
+        if (!enabled) return;
+        Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+      }}
+    />
+  );
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets();
 
@@ -1407,6 +1497,19 @@ function AppContent() {
       }
     })();
   }, [lyricsVisible, nowPlaying?.url, lyricsRetry]);
+
+  // The mini player slides up when the first song starts. It uses the JS driver on purpose:
+  // this view also has a JS-driven background colour, and the two drivers cannot be mixed.
+  const miniEnter = useRef(new Animated.Value(1)).current;
+  const hadPlayerRef = useRef(false);
+  useEffect(() => {
+    const has = !!nowPlaying;
+    if (has && !hadPlayerRef.current && settings.animationsEnabled) {
+      miniEnter.setValue(0);
+      Animated.timing(miniEnter, { toValue: 1, duration: 280, useNativeDriver: false }).start();
+    }
+    hadPlayerRef.current = has;
+  }, [!!nowPlaying]);
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -2875,10 +2978,11 @@ function AppContent() {
   }
 
   function renderTrackRow(item: SearchResult, index: number, list: SearchResult[]) {
+    const isCurrentRow = nowPlaying?.url === item.url;
     return (
       <TouchableOpacity
         key={item.url}
-        style={styles.trackRow}
+        style={[styles.trackRow, isCurrentRow && { backgroundColor: resolvedAccent + '22' }]}
         onPress={() =>
           selected.length > 0 ? toggleSelect(item) : playAtIndex(list, index, true)
         }
@@ -2895,15 +2999,19 @@ function AppContent() {
             {isSelected(item.url) && <Check size={12} color="#FFFFFF" />}
           </View>
         ) : (
-          <Text style={styles.trackIndex}>{index + 1}</Text>
+          isCurrentRow ? (
+            <NowPlayingBars color={resolvedAccent} active={playing && settings.animationsEnabled} />
+          ) : (
+            <Text style={styles.trackIndex}>{index + 1}</Text>
+          )
         )}
         {item.thumbnailUrl ? (
-          <Image source={{ uri: item.thumbnailUrl }} style={styles.trackArt} />
+          <FadeImage uri={item.thumbnailUrl} style={styles.trackArt} enabled={settings.animationsEnabled} />
         ) : (
           <View style={styles.trackArt} />
         )}
         <View style={styles.trackInfo}>
-          <Text style={styles.trackTitle} numberOfLines={2}>
+          <Text style={[styles.trackTitle, isCurrentRow && { color: resolvedAccent }]} numberOfLines={2}>
             {item.name}
           </Text>
         </View>
@@ -2941,7 +3049,13 @@ function AppContent() {
     >
       <StatusBar barStyle="light-content" />
 
-      <Animated.View style={{ flex: 1, opacity: viewOpacity }}>
+      <Animated.View
+        style={{
+          flex: 1,
+          opacity: viewOpacity,
+          transform: [{ translateY: viewOpacity.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
+        }}
+      >
         {view === 'search' && (
           <>
             <View style={styles.header}>
@@ -2995,7 +3109,9 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
               renderItem={({ item, index }) =>
-                searchMode === 'songs' ? renderTrackRow(item, index, results) : renderPlaylistRow(item as any)
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  {searchMode === 'songs' ? renderTrackRow(item, index, results) : renderPlaylistRow(item as any)}
+                </FadeInRow>
               }
               ListEmptyComponent={
                 !searching && query.trim() ? (
@@ -3159,7 +3275,9 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
               renderItem={({ item, index }) =>
-                renderTrackRow(item, index, shownTracks)
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  {renderTrackRow(item, index, shownTracks)}
+                </FadeInRow>
               }
               ListEmptyComponent={
                 <Text style={styles.emptyText}>{t.noSongsYet}</Text>
@@ -3388,6 +3506,10 @@ function AppContent() {
             { bottom: tabBarHeight },
             !playerExpanded && styles.miniPlayerCollapsedPadding,
             { backgroundColor: animatedPlayerColor },
+            {
+              opacity: miniEnter,
+              transform: [{ translateY: miniEnter.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }) }],
+            },
           ]}
         >
           {playerExpanded && (
@@ -3415,8 +3537,9 @@ function AppContent() {
 
           <View style={styles.miniPlayerTop}>
             {nowPlaying.thumbnailUrl ? (
-              <Image
-                source={{ uri: nowPlaying.thumbnailUrl }}
+              <FadeImage
+                uri={nowPlaying.thumbnailUrl}
+                enabled={settings.animationsEnabled}
                 style={styles.miniPlayerArt}
               />
             ) : (
@@ -4313,6 +4436,15 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  eqWrap: {
+    width: 22,
+    height: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  eqBar: { width: 3, height: 14, borderRadius: 1.5 },
   lyricsScreen: { flex: 1 },
   lyricsHeader: {
     flexDirection: 'row',
