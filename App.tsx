@@ -841,45 +841,72 @@ function FadeImage({
   );
 }
 
-// Higher-resolution cover for the big Now Playing art (list covers are tiny).
-function hiResArt(url: string): string {
-  if (!url) return url;
-  if (/=w\d+-h\d+/.test(url)) return url.replace(/=w\d+-h\d+/, '=w600-h600');
-  if (/ytimg\.com\/vi/.test(url)) {
-    return url.replace(/\/(default|mqdefault|sddefault)\.jpg/, '/hqdefault.jpg');
+// Candidate image URLs for the big Now Playing cover, best first. List covers are tiny
+// thumbnails, so ask for larger versions of the same image.
+function artCandidates(url: string): string[] {
+  const out: string[] = [];
+  if (!url) return out;
+  if (/(googleusercontent|ggpht)\.com\//.test(url)) {
+    if (/=w\d+-h\d+/.test(url)) out.push(url.replace(/=w\d+-h\d+/, '=w1000-h1000'));
+    else if (/=s\d+/.test(url)) out.push(url.replace(/=s\d+/, '=s1000'));
   }
-  return url;
+  const m = /ytimg\.com\/vi(?:_webp)?\/([\w-]{11})\//.exec(url);
+  if (m) {
+    for (const q of ['maxresdefault', 'sddefault', 'hqdefault']) {
+      out.push(`https://i.ytimg.com/vi/${m[1]}/${q}.jpg`);
+    }
+  }
+  out.push(url);
+  return out;
 }
 
+const ART_MIN_WIDTH = 480;
+
 function NowPlayingArt({ uri, size, enabled }: { uri: string; size: number; enabled: boolean }) {
-  const [useOriginal, setUseOriginal] = useState(false);
+  const candidates = artCandidates(uri);
+  const [idx, setIdx] = useState(0);
   const opacity = useRef(new Animated.Value(enabled ? 0 : 1)).current;
   useEffect(() => {
-    setUseOriginal(false);
+    setIdx(0);
     opacity.setValue(enabled ? 0 : 1);
   }, [uri, enabled]);
-  if (!uri) {
+  if (candidates.length === 0) {
     return (
       <View style={[styles.npArt, { width: size, height: size }]}>
         <Music size={size / 3} color={TEXT_DIM} />
       </View>
     );
   }
+  const at = Math.min(idx, candidates.length - 1);
+  const src = candidates[at];
+  const isLast = at >= candidates.length - 1;
   return (
     <Animated.Image
-      source={{ uri: useOriginal ? uri : hiResArt(uri) }}
-      style={[styles.npArt, { width: size, height: size, opacity }]}
+      key={src}
+      source={{ uri: src }}
+      resizeMethod="scale"
       resizeMode="cover"
-      onError={() => setUseOriginal(true)}
-      onLoad={() => {
+      style={[styles.npArt, { width: size, height: size, opacity }]}
+      onError={() => {
+        logDebug(`Cover failed (${at + 1}/${candidates.length}): ${src}`);
+        if (!isLast) setIdx(at + 1);
+      }}
+      onLoad={(e: any) => {
+        const w = e?.nativeEvent?.source?.width ?? 0;
+        logDebug(`Cover loaded ${w}px (${at + 1}/${candidates.length}): ${src}`);
+        if (!isLast && w > 0 && w < ART_MIN_WIDTH) {
+          setIdx(at + 1);
+          return;
+        }
         if (enabled) {
           Animated.timing(opacity, { toValue: 1, duration: 260, useNativeDriver: true }).start();
+        } else {
+          opacity.setValue(1);
         }
       }}
     />
   );
 }
-
 function AppContent() {
   const insets = useSafeAreaInsets();
 
