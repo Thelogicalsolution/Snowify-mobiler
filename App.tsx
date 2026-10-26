@@ -24,6 +24,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import {
   SafeAreaProvider,
@@ -840,6 +841,45 @@ function FadeImage({
   );
 }
 
+// Higher-resolution cover for the big Now Playing art (list covers are tiny).
+function hiResArt(url: string): string {
+  if (!url) return url;
+  if (/=w\d+-h\d+/.test(url)) return url.replace(/=w\d+-h\d+/, '=w600-h600');
+  if (/ytimg\.com\/vi/.test(url)) {
+    return url.replace(/\/(default|mqdefault|sddefault)\.jpg/, '/hqdefault.jpg');
+  }
+  return url;
+}
+
+function NowPlayingArt({ uri, size, enabled }: { uri: string; size: number; enabled: boolean }) {
+  const [useOriginal, setUseOriginal] = useState(false);
+  const opacity = useRef(new Animated.Value(enabled ? 0 : 1)).current;
+  useEffect(() => {
+    setUseOriginal(false);
+    opacity.setValue(enabled ? 0 : 1);
+  }, [uri, enabled]);
+  if (!uri) {
+    return (
+      <View style={[styles.npArt, { width: size, height: size }]}>
+        <Music size={size / 3} color={TEXT_DIM} />
+      </View>
+    );
+  }
+  return (
+    <Animated.Image
+      source={{ uri: useOriginal ? uri : hiResArt(uri) }}
+      style={[styles.npArt, { width: size, height: size, opacity }]}
+      resizeMode="cover"
+      onError={() => setUseOriginal(true)}
+      onLoad={() => {
+        if (enabled) {
+          Animated.timing(opacity, { toValue: 1, duration: 260, useNativeDriver: true }).start();
+        }
+      }}
+    />
+  );
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets();
 
@@ -1510,6 +1550,72 @@ function AppContent() {
     }
     hadPlayerRef.current = has;
   }, [!!nowPlaying]);
+
+  // --- Now Playing screen (opened from the mini player's cover) ---
+  const { width: winW, height: winH } = useWindowDimensions();
+  const npArtSize = Math.max(180, Math.min(winW - 64, winH * 0.4, 380));
+  const [npVisible, setNpVisible] = useState(false);
+  const [npMounted, setNpMounted] = useState(false);
+  const npAnim = useRef(new Animated.Value(0)).current;
+  const [npArtist, setNpArtist] = useState('');
+  const npArtistCache = useRef<{ [url: string]: string }>({});
+
+  useEffect(() => {
+    if (npVisible) {
+      setNpMounted(true);
+    } else if (npMounted) {
+      Animated.timing(npAnim, {
+        toValue: 0,
+        duration: settings.animationsEnabled ? 240 : 0,
+        useNativeDriver: true,
+      }).start(() => setNpMounted(false));
+    }
+  }, [npVisible]);
+
+  useEffect(() => {
+    if (npMounted && npVisible) {
+      Animated.timing(npAnim, {
+        toValue: 1,
+        duration: settings.animationsEnabled ? 300 : 0,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [npMounted]);
+
+  useEffect(() => {
+    if (!nowPlaying) setNpVisible(false);
+  }, [nowPlaying]);
+
+  useEffect(() => {
+    if (!npVisible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setNpVisible(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [npVisible]);
+
+  useEffect(() => {
+    if (!npVisible || !nowPlaying) return;
+    const url = nowPlaying.url;
+    const cached = npArtistCache.current[url];
+    if (cached !== undefined) {
+      setNpArtist(cached);
+      return;
+    }
+    setNpArtist('');
+    let cancelled = false;
+    getTrackMeta(url)
+      .then(meta => {
+        const name = (meta.uploader || '').replace(/\s*-\s*Topic$/i, '').trim();
+        npArtistCache.current[url] = name;
+        if (!cancelled) setNpArtist(name);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [npVisible, nowPlaying?.url]);
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -3536,6 +3642,7 @@ function AppContent() {
           )}
 
           <View style={styles.miniPlayerTop}>
+            <TouchableOpacity onPress={() => setNpVisible(true)} activeOpacity={0.8} hitSlop={6}>
             {nowPlaying.thumbnailUrl ? (
               <FadeImage
                 uri={nowPlaying.thumbnailUrl}
@@ -3545,6 +3652,7 @@ function AppContent() {
             ) : (
               <View style={styles.miniPlayerArt} />
             )}
+          </TouchableOpacity>
             <View style={styles.miniPlayerInfo}>
               <Animated.Text
                 style={[styles.miniPlayerTitle, { color: animatedAccentColor }]}
@@ -4104,7 +4212,129 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-    <Modal
+    {npMounted && nowPlaying && (
+        <Animated.View
+          style={[
+            styles.npScreen,
+            {
+              opacity: npAnim,
+              transform: [
+                { translateY: npAnim.interpolate({ inputRange: [0, 1], outputRange: [winH * 0.35, 0] }) },
+              ],
+            },
+          ]}
+        >
+          <Animated.View
+            style={[
+              styles.npInner,
+              {
+                backgroundColor: animatedBg,
+                paddingTop: insets.top + 8,
+                paddingBottom: Math.max(insets.bottom, 0) + 20,
+              },
+            ]}
+          >
+            <View style={styles.npHeader}>
+              <TouchableOpacity hitSlop={12} onPress={() => setNpVisible(false)}>
+                <ChevronDown size={28} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.npArtWrap}>
+              <NowPlayingArt
+                uri={nowPlaying.thumbnailUrl}
+                size={npArtSize}
+                enabled={settings.animationsEnabled}
+              />
+            </View>
+
+            <View style={styles.npInfo}>
+              <Text style={styles.npTitle} numberOfLines={2}>
+                {nowPlaying.name}
+              </Text>
+              <Text style={styles.npArtist} numberOfLines={1}>
+                {npArtist || 'YouTube'}
+              </Text>
+            </View>
+
+            <View>
+              <DraggableBar
+                value={progress.duration > 0 ? progress.position / progress.duration : 0}
+                onChange={handleSeek}
+                height={4}
+                commitOnRelease
+                fillColor={resolvedAccent}
+              />
+              <View style={styles.npTimes}>
+                <Text style={styles.npTime}>{formatTime(progress.position)}</Text>
+                <Text style={styles.npTime}>{formatTime(progress.duration)}</Text>
+              </View>
+            </View>
+
+            <View style={styles.npTransport}>
+              <TouchableOpacity hitSlop={10} onPress={toggleShuffle}>
+                <Shuffle size={22} color={shuffleOn ? resolvedAccent : '#FFFFFF'} />
+              </TouchableOpacity>
+              <TouchableOpacity hitSlop={10} onPress={goPrevious}>
+                <SkipBack size={28} color="#FFFFFF" fill="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.npPlay} onPress={togglePlayPause}>
+                {playing ? (
+                  <Pause size={28} color={BG} fill={BG} />
+                ) : (
+                  <Play size={28} color={BG} fill={BG} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity hitSlop={10} onPress={goNext}>
+                <SkipForward size={28} color="#FFFFFF" fill="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity hitSlop={10} onPress={cycleRepeat}>
+                {repeatMode === 'one' ? (
+                  <Repeat1 size={22} color={resolvedAccent} />
+                ) : (
+                  <Repeat size={22} color={repeatMode === 'all' ? resolvedAccent : '#FFFFFF'} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.npActions}>
+              <AnimatedHeart
+                liked={isLiked(nowPlaying.url)}
+                onLikeToggle={() => toggleLike(nowPlaying)}
+                size={26}
+                animationsEnabled={settings.animationsEnabled}
+              />
+              <TouchableOpacity hitSlop={10} onPress={() => setLyricsVisible(true)}>
+                <Mic size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity hitSlop={10} onPress={() => setQueueModalVisible(true)}>
+                <List size={24} color={upcoming.length > 0 ? resolvedAccent : '#FFFFFF'} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                hitSlop={10}
+                style={styles.sleepButton}
+                onPress={() => setSleepModalVisible(true)}
+              >
+                <Moon size={24} color={sleepEndAt !== null ? resolvedAccent : '#FFFFFF'} />
+                {sleepEndAt !== null && (
+                  <Text style={[styles.sleepButtonText, { color: resolvedAccent }]}>
+                    {sleepMinutesLeft}m
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.npVolume}>
+              <Volume2 size={18} color={TEXT_DIM} />
+              <View style={{ flex: 1 }}>
+                <DraggableBar value={volume} onChange={setVolume} height={4} fillColor={resolvedAccent} />
+              </View>
+            </View>
+          </Animated.View>
+        </Animated.View>
+      )}
+
+      <Modal
         visible={lyricsVisible}
         animationType="slide"
         statusBarTranslucent
@@ -4436,6 +4666,37 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  npScreen: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 30, elevation: 12 },
+  npInner: { flex: 1, paddingHorizontal: 28, justifyContent: 'space-between' },
+  npHeader: { flexDirection: 'row', alignItems: 'center', height: 40 },
+  npArtWrap: { alignItems: 'center' },
+  npArt: {
+    borderRadius: 14,
+    backgroundColor: BORDER,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  npInfo: { alignItems: 'center', gap: 4 },
+  npTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: '800', textAlign: 'center' },
+  npArtist: { color: TEXT_DIM, fontSize: 15, textAlign: 'center' },
+  npTimes: { flexDirection: 'row', justifyContent: 'space-between', marginTop: -6 },
+  npTime: { color: TEXT_DIM, fontSize: 12 },
+  npTransport: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  npPlay: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  npActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 36 },
+  npVolume: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   eqWrap: {
     width: 22,
     height: 16,
