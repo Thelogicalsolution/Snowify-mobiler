@@ -374,4 +374,52 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    // Opens the native video screen (VideoPlayerActivity) for a YouTube video. The promise
+    // resolves when that screen closes, with the position it stopped at.
+    @ReactMethod
+    fun playVideo(videoUrl: String, startSeconds: Double, maxHeight: Int, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val info = StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                val audio = pickAudioStream(info.audioStreams, "best")
+
+                val adaptive = info.videoOnlyStreams.filter { it.height in 1..maxHeight }
+                val h264 = adaptive.filter { it.codec?.startsWith("avc1") == true }
+                val chosenVideo = h264.maxByOrNull { it.height }
+                    ?: adaptive.filter { it.codec?.startsWith("av01") != true }.maxByOrNull { it.height }
+                val combined = info.videoStreams.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
+
+                val videoStreamUrl: String
+                var audioStreamUrl = ""
+                val label: String
+                if (chosenVideo != null && audio != null) {
+                    videoStreamUrl = chosenVideo.content
+                    audioStreamUrl = audio.content
+                    label = "${chosenVideo.height}p ${chosenVideo.codec ?: ""} + audio"
+                } else if (combined != null) {
+                    videoStreamUrl = combined.content
+                    label = "${combined.height}p combined"
+                } else {
+                    promise.reject("NO_VIDEO_STREAM", "No playable video stream found")
+                    return@launch
+                }
+
+                val activity = reactApplicationContext.currentActivity
+                if (activity == null) {
+                    promise.reject("NO_ACTIVITY", "The app is not in the foreground")
+                    return@launch
+                }
+
+                VideoBridge.begin(promise, label)
+                val intent = android.content.Intent(activity, VideoPlayerActivity::class.java)
+                intent.putExtra("videoUrl", videoStreamUrl)
+                intent.putExtra("audioUrl", audioStreamUrl)
+                intent.putExtra("startMs", (startSeconds * 1000).toLong())
+                activity.runOnUiThread { activity.startActivity(intent) }
+            } catch (e: Exception) {
+                promise.reject("VIDEO_ERROR", e.message, e)
+            }
+        }
+    }
 }

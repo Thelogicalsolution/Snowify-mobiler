@@ -65,6 +65,7 @@ import {
   X,
   Menu as GripIcon,
   Mic,
+  Video as VideoIcon,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -77,6 +78,7 @@ import {
   searchPlaylists,
   getPlaylistTracks,
   getTrackMeta,
+  playVideo,
   PaletteSwatch,
   PlaylistResult,
 } from './NewPipeBridge';
@@ -1643,6 +1645,69 @@ function AppContent() {
       cancelled = true;
     };
   }, [npVisible, nowPlaying?.url]);
+
+  const videoText =
+    settings.language === 'uk'
+      ? { watch: 'Дивитися відео', opening: 'Відкриваю відео…', failed: 'Не вдалося відтворити відео' }
+      : { watch: 'Watch video', opening: 'Opening video…', failed: 'Could not play the video' };
+  const videoBusyRef = useRef(false);
+
+  // Pauses the audio, plays the video full screen, then hands the position back to the audio.
+  async function watchVideo(track: Track) {
+    if (videoBusyRef.current) return;
+    videoBusyRef.current = true;
+    const sameTrack = nowPlaying?.url === track.url;
+    const wasPlaying = playing;
+    let startSec = 0;
+    if (sameTrack) {
+      try {
+        startSec = TrackPlayer.getProgress().position || 0;
+      } catch {
+        startSec = progress.position || 0;
+      }
+    }
+    logDebug(`Video: opening "${track.name}" at ${formatTime(startSec)}`);
+    ToastAndroid.show(videoText.opening, ToastAndroid.SHORT);
+    try {
+      TrackPlayer.pause();
+    } catch {
+      // ignore
+    }
+    try {
+      const res = await playVideo(track.url, startSec, 1080);
+      const stoppedAt = (res?.positionMs ?? 0) / 1000;
+      logDebug(
+        `Video: closed at ${formatTime(stoppedAt)}${res?.ended ? ' (ended)' : ''} [${res?.label ?? ''}]${
+          res?.error ? ` error: ${res.error}` : ''
+        }`,
+      );
+      if (res?.error) ToastAndroid.show(videoText.failed, ToastAndroid.LONG);
+      if (sameTrack && expectedUrlRef.current === track.url) {
+        if (res?.ended) {
+          if (settings.autoplay) goNextRef.current();
+        } else if (!res?.error) {
+          TrackPlayer.seekTo(stoppedAt);
+          TrackPlayer.play();
+        } else if (wasPlaying) {
+          TrackPlayer.play();
+        }
+      } else if (wasPlaying) {
+        TrackPlayer.play();
+      }
+    } catch (e: any) {
+      logDebug(`Video failed: ${e?.message ?? e}`);
+      ToastAndroid.show(videoText.failed, ToastAndroid.LONG);
+      if (wasPlaying) {
+        try {
+          TrackPlayer.play();
+        } catch {
+          // ignore
+        }
+      }
+    } finally {
+      videoBusyRef.current = false;
+    }
+  }
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -3908,6 +3973,18 @@ function AppContent() {
             <TouchableOpacity
               style={styles.modalActionRow}
               onPress={() => {
+                if (!addToPlaylistTarget) return;
+                const picked = addToPlaylistTarget;
+                setAddToPlaylistTarget(null);
+                watchVideo(picked);
+              }}
+            >
+              <VideoIcon size={18} color="#FFFFFF" />
+              <Text style={styles.modalActionText}>{videoText.watch}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
                 if (addToPlaylistTarget) handleShareTrack(addToPlaylistTarget);
               }}
             >
@@ -4336,6 +4413,9 @@ function AppContent() {
               </TouchableOpacity>
               <TouchableOpacity hitSlop={10} onPress={() => setQueueModalVisible(true)}>
                 <List size={24} color={upcoming.length > 0 ? resolvedAccent : '#FFFFFF'} />
+              </TouchableOpacity>
+              <TouchableOpacity hitSlop={10} onPress={() => watchVideo(nowPlaying)}>
+                <VideoIcon size={24} color="#FFFFFF" />
               </TouchableOpacity>
               <TouchableOpacity
                 hitSlop={10}

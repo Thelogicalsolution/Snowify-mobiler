@@ -96,3 +96,19 @@ export type TrackMeta = {
 export async function getTrackMeta(videoUrl: string): Promise<TrackMeta> {
   return NewPipeExtractorModule.getTrackMeta(videoUrl);
 }
+
+export type VideoResult = {
+  positionMs: number;
+  ended: boolean;
+  error: string | null;
+  label: string;
+};
+
+// Opens the native full-screen video player; resolves when it is closed.
+export async function playVideo(
+  videoUrl: string,
+  startSeconds: number,
+  maxHeight: number = 1080,
+): Promise<VideoResult> {
+  return NewPipeExtractorModule.playVideo(videoUrl, startSeconds, maxHeight);
+}
