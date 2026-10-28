@@ -422,4 +422,37 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    // Video-only search (YouTube's plain "videos" filter): no music results mixed in.
+    @ReactMethod
+    fun searchVideoOnly(query: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val extractor = ServiceList.YouTube.getSearchExtractor(
+                    query,
+                    listOf(YoutubeSearchQueryHandlerFactory.VIDEOS),
+                    ""
+                )
+                extractor.fetchPage()
+
+                val results: WritableArray = Arguments.createArray()
+                val seen = HashSet<String>()
+                for (item in extractor.initialPage.items) {
+                    if (item !is StreamInfoItem) continue
+                    if (item.duration.toLong() <= 0L) continue
+                    if (!seen.add(item.url)) continue
+                    val map: WritableMap = Arguments.createMap()
+                    map.putString("url", item.url)
+                    map.putString("name", item.name)
+                    map.putString("thumbnailUrl", item.thumbnails.lastOrNull()?.url ?: "")
+                    map.putString("uploader", item.uploaderName ?: "")
+                    map.putDouble("duration", item.duration.toDouble())
+                    results.pushMap(map)
+                }
+                promise.resolve(results)
+            } catch (e: Exception) {
+                promise.reject("VIDEO_SEARCH_ERROR", e.message, e)
+            }
+        }
+    }
 }

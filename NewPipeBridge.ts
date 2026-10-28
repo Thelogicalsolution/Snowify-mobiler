@@ -112,3 +112,19 @@ export async function playVideo(
 ): Promise<VideoResult> {
   return NewPipeExtractorModule.playVideo(videoUrl, startSeconds, maxHeight);
 }
+
+export type VideoSearchResult = {
+  url: string;
+  name: string;
+  thumbnailUrl: string;
+  uploader: string;
+  duration: number;
+};
+
+// Plain video search (no music results mixed in). Live streams are skipped.
+export async function searchVideoOnly(query: string): Promise<VideoSearchResult[]> {
+  if (!query.trim()) {
+    return [];
+  }
+  return NewPipeExtractorModule.searchVideoOnly(query);
+}

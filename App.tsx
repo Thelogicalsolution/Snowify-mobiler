@@ -66,6 +66,7 @@ import {
   Menu as GripIcon,
   Mic,
   Video as VideoIcon,
+  Headphones,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -79,6 +80,8 @@ import {
   getPlaylistTracks,
   getTrackMeta,
   playVideo,
+  searchVideoOnly,
+  VideoSearchResult,
   PaletteSwatch,
   PlaylistResult,
 } from './NewPipeBridge';
@@ -119,7 +122,7 @@ import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from '.
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
-type ViewName = 'search' | 'library' | 'playlist' | 'settings';
+type ViewName = 'search' | 'video' | 'library' | 'playlist' | 'settings';
 
 const ACCENT = '#A855F7';
 const LIKE_RED = '#FF3B5C';
@@ -1707,6 +1710,114 @@ function AppContent() {
     } finally {
       videoBusyRef.current = false;
     }
+  }
+
+  const videoTabText =
+    settings.language === 'uk'
+      ? {
+          tab: 'Відео',
+          placeholder: 'Знайти відео',
+          watchShort: 'Дивитись',
+          empty: 'Нічого не знайдено',
+          searchFailed: 'Помилка пошуку відео',
+        }
+      : {
+          tab: 'Video',
+          placeholder: 'Search for videos',
+          watchShort: 'Watch',
+          empty: 'No videos found',
+          searchFailed: 'Video search failed',
+        };
+
+  const [videoQuery, setVideoQuery] = useState('');
+  const [videoResults, setVideoResults] = useState<VideoSearchResult[]>([]);
+  const [videoSearching, setVideoSearching] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const q = videoQuery.trim();
+    if (!q) {
+      setVideoResults([]);
+      setVideoError(null);
+      return;
+    }
+    const id = setTimeout(async () => {
+      setVideoSearching(true);
+      setVideoError(null);
+      logDebug(`Video search: "${q}"`);
+      try {
+        if (/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com\/watch|youtu\.be\/)/i.test(q)) {
+          const meta = await getTrackMeta(q);
+          setVideoResults([
+            {
+              url: q,
+              name: meta.title || q,
+              thumbnailUrl: '',
+              uploader: meta.uploader || '',
+              duration: Number(meta.duration) || 0,
+            },
+          ]);
+          logDebug(`Video link resolved: ${meta.title}`);
+        } else {
+          const found = await searchVideoOnly(q);
+          setVideoResults(found);
+          logDebug(`Video results: ${found.length} for "${q}"`);
+        }
+      } catch (e: any) {
+        setVideoError(e?.message ?? videoTabText.searchFailed);
+        setVideoResults([]);
+        logDebug(`Video search failed: ${e?.message ?? e}`);
+      } finally {
+        setVideoSearching(false);
+      }
+    }, 600);
+    return () => clearTimeout(id);
+  }, [videoQuery]);
+
+  function formatLong(seconds: number): string {
+    if (!isFinite(seconds) || seconds <= 0) return '';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ss = String(s).padStart(2, '0');
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  }
+
+  function renderVideoRow(v: VideoSearchResult) {
+    const isCurrentVideo = nowPlaying?.url === v.url;
+    const asTrack: Track = { url: v.url, name: v.name, thumbnailUrl: v.thumbnailUrl };
+    return (
+      <TouchableOpacity key={v.url} style={styles.videoRow} onPress={() => watchVideo(asTrack)}>
+        <View style={styles.videoThumbWrap}>
+          {v.thumbnailUrl ? (
+            <FadeImage uri={v.thumbnailUrl} style={styles.videoThumb} enabled={settings.animationsEnabled} />
+          ) : (
+            <View style={styles.videoThumb} />
+          )}
+          {v.duration > 0 && (
+            <View style={styles.videoDuration}>
+              <Text style={styles.videoDurationText}>{formatLong(v.duration)}</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.videoInfo}>
+          <Text
+            style={[styles.trackTitle, isCurrentVideo && { color: resolvedAccent }]}
+            numberOfLines={2}
+          >
+            {v.name}
+          </Text>
+          {v.uploader ? (
+            <Text style={styles.playlistSubtitle} numberOfLines={1}>
+              {v.uploader}
+            </Text>
+          ) : null}
+        </View>
+        <TouchableOpacity hitSlop={10} onPress={() => playAtIndex([asTrack], 0, true)}>
+          <Headphones size={18} color={TEXT_DIM} />
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
   }
 
   function recordHistory(track: Track) {
@@ -3484,6 +3595,44 @@ function AppContent() {
           </>
         )}
 
+        {view === 'video' && (
+          <>
+            <View style={styles.header}>
+              <Animated.Text style={[styles.headerTitle, { color: animatedAccentColor }]}>
+                {videoTabText.tab}
+              </Animated.Text>
+            </View>
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder={videoTabText.placeholder}
+                placeholderTextColor={TEXT_DIM}
+                value={videoQuery}
+                onChangeText={setVideoQuery}
+              />
+            </View>
+            {videoSearching && (
+              <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
+            )}
+            {videoError && <Text style={styles.errorText}>{videoError}</Text>}
+            <FlatList
+              data={videoResults}
+              keyExtractor={item => item.url}
+              contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad }]}
+              renderItem={({ item, index }) => (
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  {renderVideoRow(item)}
+                </FadeInRow>
+              )}
+              ListEmptyComponent={
+                !videoSearching && videoQuery.trim() ? (
+                  <Text style={styles.emptyText}>{videoTabText.empty}</Text>
+                ) : undefined
+              }
+            />
+          </>
+        )}
+
         {view === 'settings' && (
           <>
             <View style={styles.header}>
@@ -3764,6 +3913,16 @@ function AppContent() {
               />
             )}
             <TouchableOpacity
+              hitSlop={8}
+              onPress={() => watchVideo(nowPlaying)}
+              style={[styles.watchPill, { borderColor: resolvedAccent }]}
+            >
+              <VideoIcon size={14} color={resolvedAccent} />
+              <Text style={[styles.watchPillText, { color: resolvedAccent }]}>
+                {videoTabText.watchShort}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               hitSlop={10}
               onPress={togglePlayerExpanded}
               style={styles.miniPlayerChevron}
@@ -3880,6 +4039,18 @@ function AppContent() {
               ]}
             >
               {t.tabSearch}
+            </Animated.Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tabButton} onPress={() => changeView('video')}>
+            <VideoIcon size={20} color={view === 'video' ? resolvedAccent : TEXT_DIM} />
+            <Animated.Text
+              style={[
+                styles.tabLabel,
+                view === 'video' && styles.tabLabelActive,
+                view === 'video' ? { color: animatedAccentColor } : null,
+              ]}
+            >
+              {videoTabText.tab}
             </Animated.Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -4359,6 +4530,13 @@ function AppContent() {
               <Text style={styles.npArtist} numberOfLines={1}>
                 {npArtist || 'YouTube'}
               </Text>
+              <TouchableOpacity
+                style={[styles.npWatchPill, { borderColor: resolvedAccent }]}
+                onPress={() => watchVideo(nowPlaying)}
+              >
+                <VideoIcon size={18} color={resolvedAccent} />
+                <Text style={[styles.npWatchPillText, { color: resolvedAccent }]}>{videoText.watch}</Text>
+              </TouchableOpacity>
             </View>
 
             <View>
@@ -4773,6 +4951,50 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  videoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  videoThumbWrap: { width: 128, height: 72 },
+  videoThumb: { width: 128, height: 72, borderRadius: 8, backgroundColor: BORDER },
+  videoDuration: {
+    position: 'absolute',
+    right: 4,
+    bottom: 4,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  videoDurationText: { color: '#FFFFFF', fontSize: 11, fontWeight: '600' },
+  videoInfo: { flex: 1 },
+  watchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginLeft: 8,
+  },
+  watchPillText: { fontSize: 12, fontWeight: '700' },
+  npWatchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  npWatchPillText: { fontSize: 14, fontWeight: '700' },
   npScreen: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 30, elevation: 12 },
   npInner: { flex: 1, paddingHorizontal: 28, justifyContent: 'space-between' },
   npHeader: { flexDirection: 'row', alignItems: 'center', height: 40 },
