@@ -5,6 +5,10 @@ package com.snowifymobile
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
+import android.graphics.drawable.RippleDrawable
+import android.view.View
+import android.widget.ImageView
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewGroup
@@ -90,16 +94,19 @@ class VideoPlayerActivity : Activity() {
         val density = resources.displayMetrics.density
         val buttonSize = (48 * density).toInt()
         val margin = (12 * density).toInt()
-        val back = TextView(this)
-        back.text = "\u2190"
-        back.setTextColor(Color.WHITE)
-        back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
-        back.gravity = Gravity.CENTER
+        val back = ImageView(this)
+        back.setImageResource(R.drawable.ic_video_back)
+        back.scaleType = ImageView.ScaleType.CENTER_INSIDE
+        val pad = (12 * density).toInt()
+        back.setPadding(pad, pad, pad, pad)
         back.contentDescription = "Back"
         val circle = GradientDrawable()
         circle.shape = GradientDrawable.OVAL
-        circle.setColor(Color.argb(140, 0, 0, 0))
-        back.background = circle
+        circle.setColor(Color.argb(120, 0, 0, 0))
+        val mask = GradientDrawable()
+        mask.shape = GradientDrawable.OVAL
+        mask.setColor(Color.BLACK)
+        back.background = RippleDrawable(ColorStateList.valueOf(Color.argb(70, 255, 255, 255)), circle, mask)
         back.setOnClickListener { closeWith(false, null) }
         val backParams = FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.TOP or Gravity.START)
         backParams.setMargins(margin, margin, margin, margin)
@@ -117,7 +124,15 @@ class VideoPlayerActivity : Activity() {
 
         // The arrow follows the controller: visible when the controls are, hidden when they hide.
         view.setControllerVisibilityListener(
-            PlayerView.ControllerVisibilityListener { visibility -> back.visibility = visibility }
+            PlayerView.ControllerVisibilityListener { visibility ->
+                back.animate().cancel()
+                if (visibility == View.VISIBLE) {
+                    back.visibility = View.VISIBLE
+                    back.animate().alpha(1f).setDuration(200).start()
+                } else {
+                    back.animate().alpha(0f).setDuration(200).withEndAction { back.visibility = View.GONE }.start()
+                }
+            }
         )
 
         setContentView(root)
