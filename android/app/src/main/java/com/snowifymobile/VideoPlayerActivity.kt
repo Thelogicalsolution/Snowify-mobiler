@@ -4,6 +4,13 @@ package com.snowifymobile
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
+import androidx.core.view.ViewCompat
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.core.view.WindowCompat
@@ -72,7 +79,49 @@ class VideoPlayerActivity : Activity() {
         val view = PlayerView(this)
         view.setBackgroundColor(Color.BLACK)
         view.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-        setContentView(view)
+        // A back arrow that shows and hides together with the player controls.
+        val root = FrameLayout(this)
+        root.setBackgroundColor(Color.BLACK)
+        root.addView(
+            view,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+
+        val density = resources.displayMetrics.density
+        val buttonSize = (48 * density).toInt()
+        val margin = (12 * density).toInt()
+        val back = TextView(this)
+        back.text = "\u2190"
+        back.setTextColor(Color.WHITE)
+        back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+        back.gravity = Gravity.CENTER
+        back.contentDescription = "Back"
+        val circle = GradientDrawable()
+        circle.shape = GradientDrawable.OVAL
+        circle.setColor(Color.argb(140, 0, 0, 0))
+        back.background = circle
+        back.setOnClickListener { closeWith(false, null) }
+        val backParams = FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.TOP or Gravity.START)
+        backParams.setMargins(margin, margin, margin, margin)
+        root.addView(back, backParams)
+
+        // Keep the arrow clear of the status bar area and camera cut-outs.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val safe = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            backParams.setMargins(margin + safe.left, margin + safe.top, margin, margin)
+            back.layoutParams = backParams
+            insets
+        }
+
+        // The arrow follows the controller: visible when the controls are, hidden when they hide.
+        view.setControllerVisibilityListener(
+            PlayerView.ControllerVisibilityListener { visibility -> back.visibility = visibility }
+        )
+
+        setContentView(root)
+        ViewCompat.requestApplyInsets(root)
         playerView = view
         hideBars()
 
