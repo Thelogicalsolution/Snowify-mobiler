@@ -3,6 +3,7 @@
 package com.snowifymobile
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.content.res.ColorStateList
@@ -134,6 +135,16 @@ class VideoPlayerActivity : Activity() {
                 }
             }
         )
+
+        // Locked orientation: portrait by default, the fullscreen button flips between locked landscape and locked portrait.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        view.setFullscreenButtonClickListener { isFullScreen ->
+            requestedOrientation = if (isFullScreen) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+        }
 
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
