@@ -67,6 +67,7 @@ import {
   Mic,
   Video as VideoIcon,
   Headphones,
+  Users,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -81,6 +82,9 @@ import {
   getTrackMeta,
   playVideo,
   searchVideoOnly,
+  getChannel,
+  getChannelTab,
+  ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
   PlaylistResult,
@@ -118,11 +122,19 @@ import {
   clearSession,
 } from './SessionStore';
 import { loadHistory, saveHistory } from './HistoryStore';
+import { FollowedChannel, loadFollowing, saveFollowing } from './FollowStore';
 import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from './LyricsStore';
 
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
-type ViewName = 'search' | 'video' | 'library' | 'playlist' | 'settings';
+type ViewName =
+  | 'search'
+  | 'video'
+  | 'library'
+  | 'playlist'
+  | 'settings'
+  | 'channel'
+  | 'following';
 
 const ACCENT = '#A855F7';
 const LIKE_RED = '#FF3B5C';
@@ -1450,7 +1462,8 @@ function AppContent() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const remoteTokenRef = useRef(0);
 
-  function openRemotePlaylist(p: { url: string; name?: string; uploader?: string }) {
+  function openRemotePlaylist(p: { url: string; name?: string; uploader?: string; backTo?: ViewName }) {
+    setRemoteBackTo(p.backTo ?? (view === 'channel' ? 'channel' : 'search'));
     const token = ++remoteTokenRef.current;
     logDebug(`Opening YouTube playlist: ${p.name ?? p.url}`);
     setRemote({ url: p.url, name: p.name ?? '', uploader: p.uploader ?? '', tracks: [] });
@@ -1633,14 +1646,18 @@ function AppContent() {
     const cached = npArtistCache.current[url];
     if (cached !== undefined) {
       setNpArtist(cached);
+      setNpChannelUrl(npChannelCache.current[url] || '');
       return;
     }
     setNpArtist('');
+    setNpChannelUrl('');
     let cancelled = false;
     getTrackMeta(url)
       .then(meta => {
         const name = (meta.uploader || '').replace(/\s*-\s*Topic$/i, '').trim();
         npArtistCache.current[url] = name;
+        npChannelCache.current[url] = meta.uploaderUrl || '';
+        if (!cancelled) setNpChannelUrl(meta.uploaderUrl || '');
         if (!cancelled) setNpArtist(name);
       })
       .catch(() => {});
@@ -1783,9 +1800,10 @@ function AppContent() {
     return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
   }
 
-  function renderVideoRow(v: VideoSearchResult) {
+  function renderVideoRow(v: VideoSearchResult, linkChannel: boolean = true) {
     const isCurrentVideo = nowPlaying?.url === v.url;
     const asTrack: Track = { url: v.url, name: v.name, thumbnailUrl: v.thumbnailUrl };
+    const canOpenChannel = linkChannel && !!v.uploaderUrl;
     return (
       <TouchableOpacity key={v.url} style={styles.videoRow} onPress={() => watchVideo(asTrack)}>
         <View style={styles.videoThumbWrap}>
@@ -1808,7 +1826,15 @@ function AppContent() {
             {v.name}
           </Text>
           {v.uploader ? (
-            <Text style={styles.playlistSubtitle} numberOfLines={1}>
+            <Text
+              style={[styles.playlistSubtitle, canOpenChannel && { color: resolvedAccent }]}
+              numberOfLines={1}
+              onPress={
+                canOpenChannel
+                  ? () => openChannel({ url: v.uploaderUrl as string, name: v.uploader }, view)
+                  : undefined
+              }
+            >
               {v.uploader}
             </Text>
           ) : null}
@@ -1818,6 +1844,163 @@ function AppContent() {
         </TouchableOpacity>
       </TouchableOpacity>
     );
+  }
+
+  const channelText =
+    settings.language === 'uk'
+      ? {
+          follow: 'Стежити',
+          following: 'Ви стежите',
+          followingTitle: 'Підписки',
+          noFollowing: 'Ви ще ні за ким не стежите. Відкрийте канал і натисніть «Стежити».',
+          videos: 'Відео',
+          playlists: 'Плейлисти',
+          subscribers: 'підписників',
+          empty: 'Тут поки нічого немає',
+          failed: 'Не вдалося завантажити канал',
+          loading: 'Завантаження…',
+          followedToast: 'Ви стежите за каналом',
+          unfollowedToast: 'Ви більше не стежите за каналом',
+        }
+      : {
+          follow: 'Follow',
+          following: 'Following',
+          followingTitle: 'Following',
+          noFollowing: 'You are not following any channels yet. Open a channel and press Follow.',
+          videos: 'Videos',
+          playlists: 'Playlists',
+          subscribers: 'subscribers',
+          empty: 'Nothing here yet',
+          failed: 'Could not load this channel',
+          loading: 'Loading…',
+          followedToast: 'Following this channel',
+          unfollowedToast: 'Unfollowed this channel',
+        };
+
+  const [channelFrom, setChannelFrom] = useState<ViewName>('video');
+  const [channel, setChannel] = useState<ChannelHeader | null>(null);
+  const [channelTab, setChannelTab] = useState<'videos' | 'playlists'>('videos');
+  const [channelVideos, setChannelVideos] = useState<VideoSearchResult[]>([]);
+  const [channelPlaylists, setChannelPlaylists] = useState<PlaylistResult[]>([]);
+  const [channelNext, setChannelNext] = useState<{ videos: string | null; playlists: string | null }>({
+    videos: '',
+    playlists: '',
+  });
+  const [channelLoading, setChannelLoading] = useState(false);
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const channelTokenRef = useRef(0);
+  const [remoteBackTo, setRemoteBackTo] = useState<ViewName>('search');
+  const [following, setFollowing] = useState<FollowedChannel[]>([]);
+  const [followingLoaded, setFollowingLoaded] = useState(false);
+  const [npChannelUrl, setNpChannelUrl] = useState('');
+  const npChannelCache = useRef<{ [url: string]: string }>({});
+
+  useEffect(() => {
+    loadFollowing().then(f => {
+      setFollowing(prev => [...prev, ...f.filter(x => !prev.some(p => p.url === x.url))]);
+      setFollowingLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!followingLoaded) return;
+    saveFollowing(following);
+  }, [following, followingLoaded]);
+
+  function formatCount(n: number): string {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace(/\.0$/, '')}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`;
+    return String(n);
+  }
+
+  function openChannel(c: { url: string; name?: string; avatarUrl?: string }, from: ViewName = view) {
+    if (!c.url) return;
+    const token = ++channelTokenRef.current;
+    logDebug(`Opening channel: ${c.name || c.url}`);
+    setChannelFrom(from);
+    setChannel({
+      url: c.url,
+      name: c.name ?? '',
+      avatarUrl: c.avatarUrl ?? '',
+      subscribers: -1,
+      hasVideos: true,
+      hasPlaylists: false,
+    });
+    setChannelTab('videos');
+    setChannelVideos([]);
+    setChannelPlaylists([]);
+    setChannelNext({ videos: '', playlists: '' });
+    setChannelLoading(true);
+    setChannelError(null);
+    changeView('channel');
+    (async () => {
+      try {
+        const header = await getChannel(c.url);
+        if (token !== channelTokenRef.current) return;
+        setChannel(header);
+        const page = await getChannelTab(header.url, 'videos', '');
+        if (token !== channelTokenRef.current) return;
+        setChannelVideos(page.items as VideoSearchResult[]);
+        setChannelNext(prev => ({ ...prev, videos: page.next || null }));
+        logDebug(
+          `Channel loaded: ${header.name} (${page.items.length} videos${header.hasPlaylists ? ', has playlists' : ''})`,
+        );
+      } catch (e: any) {
+        if (token !== channelTokenRef.current) return;
+        setChannelError(channelText.failed);
+        logDebug(`Channel failed: ${e?.message ?? e}`);
+      } finally {
+        if (token === channelTokenRef.current) setChannelLoading(false);
+      }
+    })();
+  }
+
+  async function loadChannelTab(tab: 'videos' | 'playlists') {
+    if (!channel || channelLoading) return;
+    const state = channelNext[tab];
+    if (state === null) return;
+    if (tab === 'videos' && state === '') return;
+    const token = channelTokenRef.current;
+    setChannelLoading(true);
+    try {
+      const page = await getChannelTab(channel.url, tab, state);
+      if (token !== channelTokenRef.current) return;
+      if (tab === 'videos') {
+        const more = page.items as VideoSearchResult[];
+        setChannelVideos(prev => [...prev, ...more.filter(i => !prev.some(p => p.url === i.url))]);
+      } else {
+        const more = page.items as PlaylistResult[];
+        setChannelPlaylists(prev => [...prev, ...more.filter(i => !prev.some(p => p.url === i.url))]);
+      }
+      setChannelNext(prev => ({ ...prev, [tab]: page.next || null }));
+      logDebug(`Channel ${tab}: ${page.items.length} more`);
+    } catch (e: any) {
+      if (token !== channelTokenRef.current) return;
+      setChannelError(channelText.failed);
+      logDebug(`Channel ${tab} failed: ${e?.message ?? e}`);
+    } finally {
+      if (token === channelTokenRef.current) setChannelLoading(false);
+    }
+  }
+
+  function selectChannelTab(tab: 'videos' | 'playlists') {
+    setChannelTab(tab);
+    if (tab === 'playlists' && channelNext.playlists === '' && channelPlaylists.length === 0) {
+      loadChannelTab('playlists');
+    }
+  }
+
+  function toggleFollow() {
+    if (!channel) return;
+    const url = channel.url;
+    const isOn = following.some(f => f.url === url);
+    setFollowing(prev =>
+      isOn
+        ? prev.filter(f => f.url !== url)
+        : [{ url, name: channel.name, avatarUrl: channel.avatarUrl }, ...prev],
+    );
+    logDebug(`${isOn ? 'Unfollowed' : 'Followed'} channel: ${channel.name}`);
+    ToastAndroid.show(isOn ? channelText.unfollowedToast : channelText.followedToast, ToastAndroid.SHORT);
   }
 
   function recordHistory(track: Track) {
@@ -2319,8 +2502,16 @@ function AppContent() {
       animated: true,
     });
   }, [activeLyric, lyricsVisible]);
-  const libraryTabActive = view === 'library' || (view === 'playlist' && viewingPlaylistId !== 'remote');
-  const searchTabActive = view === 'search' || (view === 'playlist' && viewingPlaylistId === 'remote');
+  const libraryTabActive =
+    view === 'library' ||
+    view === 'following' ||
+    (view === 'playlist' && viewingPlaylistId !== 'remote') ||
+    (view === 'channel' && (channelFrom === 'library' || channelFrom === 'playlist' || channelFrom === 'following'));
+  const videoTabActive = view === 'video' || (view === 'channel' && channelFrom === 'video');
+  const searchTabActive =
+    view === 'search' ||
+    (view === 'playlist' && viewingPlaylistId === 'remote') ||
+    (view === 'channel' && channelFrom === 'search');
 
   function cycleSort() {
     setSortMode(m => (m === 'default' ? 'reverse' : m === 'reverse' ? 'az' : m === 'az' ? 'za' : 'default'));
@@ -3241,6 +3432,7 @@ function AppContent() {
           setLikedSongs([]);
           setPlaylists([]);
           setDownloads([]);
+          setFollowing([]);
           setHistory([]);
           setSettings(DEFAULT_SETTINGS);
           logDebug('All data reset by user');
@@ -3483,6 +3675,15 @@ function AppContent() {
                       </Text>
                     </View>
                   </TouchableOpacity>
+                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('following')}>
+                    <View style={styles.playlistIcon}>
+                      <Users size={20} color={resolvedAccent} />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>{channelText.followingTitle}</Text>
+                      <Text style={styles.playlistSubtitle}>{following.length}</Text>
+                    </View>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.playlistRow}
                     onPress={() => openPlaylistView('downloaded')}
@@ -3530,7 +3731,7 @@ function AppContent() {
         {view === 'playlist' && viewingPlaylistId && (
           <>
             <View style={styles.playlistDetailHeader}>
-              <TouchableOpacity onPress={() => changeView(viewingPlaylistId === 'remote' ? 'search' : 'library')} hitSlop={10}>
+              <TouchableOpacity onPress={() => changeView(viewingPlaylistId === 'remote' ? remoteBackTo : 'library')} hitSlop={10}>
                 <ChevronLeft size={24} color="#FFFFFF" />
               </TouchableOpacity>
               <Text style={styles.playlistDetailTitle} numberOfLines={1}>
@@ -3629,6 +3830,139 @@ function AppContent() {
                   <Text style={styles.emptyText}>{videoTabText.empty}</Text>
                 ) : undefined
               }
+            />
+          </>
+        )}
+
+        {view === 'channel' && channel && (
+          <>
+            <View style={styles.playlistDetailHeader}>
+              <TouchableOpacity onPress={() => changeView(channelFrom)} hitSlop={10}>
+                <ChevronLeft size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+              <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+                {channel.name || channelText.loading}
+              </Text>
+            </View>
+            <View style={styles.channelHeader}>
+              {channel.avatarUrl ? (
+                <FadeImage uri={channel.avatarUrl} style={styles.channelAvatar} enabled={settings.animationsEnabled} />
+              ) : (
+                <View style={styles.channelAvatar} />
+              )}
+              <View style={styles.channelHeaderInfo}>
+                <Text style={styles.trackTitle} numberOfLines={2}>
+                  {channel.name}
+                </Text>
+                {channel.subscribers >= 0 ? (
+                  <Text style={styles.playlistSubtitle}>
+                    {formatCount(channel.subscribers)} {channelText.subscribers}
+                  </Text>
+                ) : null}
+              </View>
+              <TouchableOpacity
+                style={[
+                  styles.actionPill,
+                  !following.some(f => f.url === channel.url) && {
+                    backgroundColor: resolvedAccent,
+                    borderColor: resolvedAccent,
+                  },
+                ]}
+                onPress={toggleFollow}
+              >
+                <Text style={styles.actionPillText}>
+                  {following.some(f => f.url === channel.url) ? channelText.following : channelText.follow}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {channel.hasPlaylists && (
+              <View style={styles.searchModeRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.searchModePill,
+                    channelTab === 'videos' && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+                  ]}
+                  onPress={() => selectChannelTab('videos')}
+                >
+                  <Text style={styles.searchModePillText}>{channelText.videos}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.searchModePill,
+                    channelTab === 'playlists' && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+                  ]}
+                  onPress={() => selectChannelTab('playlists')}
+                >
+                  <Text style={styles.searchModePillText}>{channelText.playlists}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {channelError && <Text style={styles.errorText}>{channelError}</Text>}
+            <FlatList
+              data={(channelTab === 'videos' ? channelVideos : channelPlaylists) as any[]}
+              keyExtractor={item => item.url}
+              contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad }]}
+              renderItem={({ item, index }) => (
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  {channelTab === 'videos' ? renderVideoRow(item, false) : renderPlaylistRow(item)}
+                </FadeInRow>
+              )}
+              onEndReached={() => loadChannelTab(channelTab)}
+              onEndReachedThreshold={0.6}
+              ListFooterComponent={
+                channelLoading ? (
+                  <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
+                ) : null
+              }
+              ListEmptyComponent={
+                !channelLoading && !channelError ? (
+                  <Text style={styles.emptyText}>{channelText.empty}</Text>
+                ) : undefined
+              }
+            />
+          </>
+        )}
+
+        {view === 'following' && (
+          <>
+            <View style={styles.playlistDetailHeader}>
+              <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
+                <ChevronLeft size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+              <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+                {channelText.followingTitle}
+              </Text>
+            </View>
+            <FlatList
+              data={following}
+              keyExtractor={f => f.url}
+              contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad }]}
+              renderItem={({ item, index }) => (
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  <TouchableOpacity
+                    style={styles.trackRow}
+                    onPress={() => openChannel(item, 'following')}
+                  >
+                    {item.avatarUrl ? (
+                      <FadeImage uri={item.avatarUrl} style={styles.followAvatar} enabled={settings.animationsEnabled} />
+                    ) : (
+                      <View style={styles.followAvatar} />
+                    )}
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      hitSlop={10}
+                      onPress={() => setFollowing(prev => prev.filter(f => f.url !== item.url))}
+                    >
+                      <X size={18} color={TEXT_DIM} />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                </FadeInRow>
+              )}
+              ListEmptyComponent={<Text style={styles.emptyText}>{channelText.noFollowing}</Text>}
             />
           </>
         )}
@@ -4042,12 +4376,12 @@ function AppContent() {
             </Animated.Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.tabButton} onPress={() => changeView('video')}>
-            <VideoIcon size={20} color={view === 'video' ? resolvedAccent : TEXT_DIM} />
+            <VideoIcon size={20} color={videoTabActive ? resolvedAccent : TEXT_DIM} />
             <Animated.Text
               style={[
                 styles.tabLabel,
-                view === 'video' && styles.tabLabelActive,
-                view === 'video' ? { color: animatedAccentColor } : null,
+                videoTabActive && styles.tabLabelActive,
+                videoTabActive ? { color: animatedAccentColor } : null,
               ]}
             >
               {videoTabText.tab}
@@ -4527,7 +4861,16 @@ function AppContent() {
               <Text style={styles.npTitle} numberOfLines={2}>
                 {nowPlaying.name}
               </Text>
-              <Text style={styles.npArtist} numberOfLines={1}>
+              <Text
+                style={[styles.npArtist, npChannelUrl ? { color: resolvedAccent } : null]}
+                numberOfLines={1}
+                onPress={() => {
+                  if (npChannelUrl) {
+                    setNpVisible(false);
+                    openChannel({ url: npChannelUrl, name: npArtist }, view);
+                  }
+                }}
+              >
                 {npArtist || 'YouTube'}
               </Text>
               <TouchableOpacity
@@ -4951,6 +5294,16 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  channelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 14,
+  },
+  channelAvatar: { width: 64, height: 64, borderRadius: 32, backgroundColor: BORDER },
+  channelHeaderInfo: { flex: 1 },
+  followAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: BORDER, marginRight: 12 },
   videoRow: {
     flexDirection: 'row',
     alignItems: 'center',

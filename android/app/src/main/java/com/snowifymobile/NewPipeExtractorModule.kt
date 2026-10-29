@@ -22,6 +22,8 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
+import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.localization.ContentCountry
@@ -368,6 +370,7 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                 map.putString("title", info.name)
                 map.putString("uploader", info.uploaderName ?: "")
                 map.putDouble("duration", info.duration.toDouble())
+                map.putString("uploaderUrl", info.uploaderUrl ?: "")
                 promise.resolve(map)
             } catch (e: Exception) {
                 promise.reject("META_ERROR", e.message, e)
@@ -447,11 +450,120 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
                     map.putString("thumbnailUrl", item.thumbnails.lastOrNull()?.url ?: "")
                     map.putString("uploader", item.uploaderName ?: "")
                     map.putDouble("duration", item.duration.toDouble())
+                    map.putString("uploaderUrl", item.uploaderUrl ?: "")
                     results.pushMap(map)
                 }
                 promise.resolve(results)
             } catch (e: Exception) {
                 promise.reject("VIDEO_SEARCH_ERROR", e.message, e)
+            }
+        }
+    }
+
+    // Cached tab handlers and page tokens of the channels opened so far.
+    private val channelTabs = java.util.concurrent.ConcurrentHashMap<String, ListLinkHandler>()
+    private val channelPages = java.util.concurrent.ConcurrentHashMap<String, Page>()
+    private val channelPageCounter = java.util.concurrent.atomic.AtomicLong(0)
+
+    // A channel's header (name, avatar, subscribers) and which tabs it has.
+    @ReactMethod
+    fun getChannel(channelUrl: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val info = ChannelInfo.getInfo(ServiceList.YouTube, channelUrl)
+                var hasVideos = false
+                var hasPlaylists = false
+                for (tab in info.tabs) {
+                    val filters = tab.contentFilters
+                    if (filters.contains("videos")) {
+                        channelTabs["${info.url}|videos"] = tab
+                        hasVideos = true
+                    }
+                    if (filters.contains("playlists")) {
+                        channelTabs["${info.url}|playlists"] = tab
+                        hasPlaylists = true
+                    }
+                }
+                val map: WritableMap = Arguments.createMap()
+                map.putString("url", info.url)
+                map.putString("name", info.name)
+                map.putString("avatarUrl", info.avatars.lastOrNull()?.url ?: "")
+                map.putDouble("subscribers", info.subscriberCount.toDouble())
+                map.putBoolean("hasVideos", hasVideos)
+                map.putBoolean("hasPlaylists", hasPlaylists)
+                promise.resolve(map)
+            } catch (e: Exception) {
+                promise.reject("CHANNEL_ERROR", e.message, e)
+            }
+        }
+    }
+
+    // One page of a channel tab ("videos" or "playlists"). An empty pageToken means the first
+    // page; the returned "next" token (empty when there is no more) fetches the following one.
+    @ReactMethod
+    fun getChannelTab(channelUrl: String, tab: String, pageToken: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val handler = channelTabs["$channelUrl|$tab"]
+                if (handler == null) {
+                    promise.reject("NO_TAB", "This channel has no $tab tab")
+                    return@launch
+                }
+                val extractor = ServiceList.YouTube.getChannelTabExtractor(handler)
+                val page = if (pageToken.isEmpty()) {
+                    extractor.fetchPage()
+                    extractor.initialPage
+                } else {
+                    val saved = channelPages[pageToken]
+                    if (saved == null) {
+                        promise.reject("NO_PAGE", "This page expired, open the channel again")
+                        return@launch
+                    }
+                    extractor.getPage(saved)
+                }
+
+                val items: WritableArray = Arguments.createArray()
+                val seen = HashSet<String>()
+                for (item in page.items) {
+                    if (tab == "playlists") {
+                        if (item !is PlaylistInfoItem) continue
+                        if (!seen.add(item.url)) continue
+                        val map: WritableMap = Arguments.createMap()
+                        map.putString("url", item.url)
+                        map.putString("name", item.name)
+                        map.putString("thumbnailUrl", item.thumbnails.firstOrNull()?.url ?: "")
+                        map.putString("uploader", item.uploaderName ?: "")
+                        map.putDouble("count", item.streamCount.toDouble())
+                        items.pushMap(map)
+                    } else {
+                        if (item !is StreamInfoItem) continue
+                        if (item.duration.toLong() <= 0L) continue
+                        if (!seen.add(item.url)) continue
+                        val map: WritableMap = Arguments.createMap()
+                        map.putString("url", item.url)
+                        map.putString("name", item.name)
+                        map.putString("thumbnailUrl", item.thumbnails.lastOrNull()?.url ?: "")
+                        map.putString("uploader", item.uploaderName ?: "")
+                        map.putString("uploaderUrl", item.uploaderUrl ?: "")
+                        map.putDouble("duration", item.duration.toDouble())
+                        items.pushMap(map)
+                    }
+                }
+
+                var nextToken = ""
+                val next = page.nextPage
+                if (next != null) {
+                    if (channelPages.size > 300) channelPages.clear()
+                    nextToken = "p" + channelPageCounter.incrementAndGet()
+                    channelPages[nextToken] = next
+                }
+
+                val result: WritableMap = Arguments.createMap()
+                result.putArray("items", items)
+                result.putString("next", nextToken)
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("CHANNEL_TAB_ERROR", e.message, e)
             }
         }
     }

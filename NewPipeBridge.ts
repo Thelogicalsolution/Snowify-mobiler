@@ -87,6 +87,7 @@ export async function getPlaylistTracks(
 }
 
 export type TrackMeta = {
+  uploaderUrl?: string;
   title: string;
   uploader: string;
   duration: number;
@@ -114,6 +115,7 @@ export async function playVideo(
 }
 
 export type VideoSearchResult = {
+  uploaderUrl?: string;
   url: string;
   name: string;
   thumbnailUrl: string;
@@ -127,4 +129,33 @@ export async function searchVideoOnly(query: string): Promise<VideoSearchResult[
     return [];
   }
   return NewPipeExtractorModule.searchVideoOnly(query);
+}
+
+export type ChannelHeader = {
+  url: string;
+  name: string;
+  avatarUrl: string;
+  subscribers: number;
+  hasVideos: boolean;
+  hasPlaylists: boolean;
+};
+
+export type ChannelPage = {
+  items: any[];
+  next: string;
+};
+
+// A channel's name, avatar, subscriber count and which tabs it has.
+export async function getChannel(channelUrl: string): Promise<ChannelHeader> {
+  return NewPipeExtractorModule.getChannel(channelUrl);
+}
+
+// One page of a channel tab ('videos' or 'playlists'). Pass the previous page's `next`
+// token to continue; an empty token means the first page.
+export async function getChannelTab(
+  channelUrl: string,
+  tab: 'videos' | 'playlists',
+  pageToken: string = '',
+): Promise<ChannelPage> {
+  return NewPipeExtractorModule.getChannelTab(channelUrl, tab, pageToken);
 }
