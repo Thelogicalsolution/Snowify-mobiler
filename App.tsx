@@ -2355,15 +2355,7 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  // Long tracks play at the chosen speed; songs always play at normal speed.
-  const isLongForm = progress.duration >= LONG_FORM_SECONDS;
-  useEffect(() => {
-    try {
-      TrackPlayer.setPlaybackSpeed(isLongForm ? settings.playbackSpeed : 1);
-    } catch {
-      // ignore
-    }
-  }, [isLongForm, settings.playbackSpeed, nowPlaying?.url]);
+  
 
   const bookList = Object.values(books)
     .filter(b => b.isBook)
@@ -2928,6 +2920,16 @@ function AppContent() {
     shownTracks = [...shownTracks].sort((a, b) => b.name.localeCompare(a.name));
   }
   const sortLabel = sortText.modes[sortMode];
+
+  // Long tracks play at the chosen speed; songs always play at normal speed.
+  const isLongForm = progress.duration >= LONG_FORM_SECONDS;
+  useEffect(() => {
+    try {
+      TrackPlayer.setPlaybackSpeed(isLongForm ? settings.playbackSpeed : 1);
+    } catch {
+      // ignore
+    }
+  }, [isLongForm, settings.playbackSpeed, nowPlaying?.url]);
 
   // Lyrics: which synced line is current, and scrolling it into view.
   const showLyrics = lyricsUrl === (nowPlaying?.url ?? null);
