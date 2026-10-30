@@ -23,6 +23,7 @@ import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.stream.VideoStream
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.localization.Localization
@@ -565,6 +566,246 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             } catch (e: Exception) {
                 promise.reject("CHANNEL_TAB_ERROR", e.message, e)
             }
+        }
+    }
+
+    // ---- Video downloads: a video file and a sound file saved in the app's private storage ----
+    private val dlUserAgent =
+        "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    private val downloadProgress = java.util.concurrent.ConcurrentHashMap<String, LongArray>()
+    private val downloadCancel = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicBoolean>()
+    private val downloadCalls = java.util.concurrent.ConcurrentHashMap<String, okhttp3.Call>()
+
+    // Best video-only stream at or below the requested height (H.264 preferred so it plays everywhere).
+    private fun pickVideoStreamAtHeight(streams: List<VideoStream>, height: Int): VideoStream? {
+        val atOrBelow = streams.filter { it.height in 1..height }
+        if (atOrBelow.isEmpty()) return null
+        val bestHeight = atOrBelow.maxOf { it.height }
+        val sameHeight = atOrBelow.filter { it.height == bestHeight }
+        return sameHeight.firstOrNull { it.codec?.startsWith("avc1") == true }
+            ?: sameHeight.firstOrNull { it.codec?.startsWith("av01") != true }
+            ?: sameHeight.first()
+    }
+
+    // File size from the server (a one-byte range request), or -1 when unknown.
+    private fun probeSize(url: String): Long {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", dlUserAgent)
+                .header("Range", "bytes=0-0")
+                .build()
+            httpClient.newCall(request).execute().use { r ->
+                val total = r.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
+                total ?: (r.header("Content-Length")?.toLongOrNull() ?: -1L)
+            }
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
+    // Downloads url into target in 8 MB range requests, counting bytes into progress[0].
+    private fun downloadToFile(
+        id: String,
+        url: String,
+        target: java.io.File,
+        progress: LongArray,
+        cancel: java.util.concurrent.atomic.AtomicBoolean
+    ) {
+        val chunk = 8L * 1024 * 1024
+        var start = 0L
+        var total = -1L
+        var finished = false
+        val buffer = ByteArray(64 * 1024)
+        java.io.FileOutputStream(target).use { out ->
+            while (!finished) {
+                if (cancel.get()) throw java.io.IOException("cancelled")
+                val end = if (total > 0) minOf(start + chunk - 1, total - 1) else start + chunk - 1
+                val wanted = end - start + 1
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", dlUserAgent)
+                    .header("Range", "bytes=$start-$end")
+                    .build()
+                val call = httpClient.newCall(request)
+                downloadCalls[id] = call
+                call.execute().use { response ->
+                    if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
+                    val body = response.body ?: throw java.io.IOException("Empty response")
+                    val partial = response.code == 206
+                    if (partial && total < 0) {
+                        total = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: -1L
+                    }
+                    val input = body.byteStream()
+                    var read = 0
+                    var got = 0L
+                    while (input.read(buffer).also { read = it } != -1) {
+                        if (cancel.get()) throw java.io.IOException("cancelled")
+                        out.write(buffer, 0, read)
+                        got += read
+                        progress[0] += read.toLong()
+                    }
+                    start += got
+                    if (!partial) {
+                        finished = true
+                    } else if (total > 0 && start >= total) {
+                        finished = true
+                    } else if (got < wanted) {
+                        finished = true
+                    }
+                }
+            }
+        }
+    }
+
+    // Which qualities can be downloaded, with the total size (video plus sound) of each.
+    @ReactMethod
+    fun getVideoDownloadOptions(videoUrl: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val info = StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                val audio = pickAudioStream(info.audioStreams, "best")
+                val audioBytes = if (audio != null) probeSize(audio.content) else 0L
+                val result: WritableArray = Arguments.createArray()
+                val seen = HashSet<Int>()
+                for (target in listOf(360, 480, 720, 1080)) {
+                    val stream = pickVideoStreamAtHeight(info.videoOnlyStreams, target) ?: continue
+                    if (!seen.add(stream.height)) continue
+                    val videoBytes = probeSize(stream.content)
+                    val map: WritableMap = Arguments.createMap()
+                    map.putInt("height", stream.height)
+                    map.putString("codec", stream.codec ?: "")
+                    map.putDouble(
+                        "bytes",
+                        if (videoBytes > 0) (videoBytes + maxOf(audioBytes, 0L)).toDouble() else -1.0
+                    )
+                    result.pushMap(map)
+                }
+                if (audio == null || result.size() == 0) {
+                    promise.reject("NO_VIDEO_STREAM", "No downloadable video streams found")
+                    return@launch
+                }
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("OPTIONS_ERROR", e.message, e)
+            }
+        }
+    }
+
+    // Downloads the sound and the video of trackUrl at the chosen height. Resolves with the file paths.
+    @ReactMethod
+    fun startVideoDownload(id: String, trackUrl: String, height: Int, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+            val progress = longArrayOf(0L, -1L)
+            downloadCancel[id] = cancel
+            downloadProgress[id] = progress
+            var videoFile: java.io.File? = null
+            var audioFile: java.io.File? = null
+            try {
+                val info = StreamInfo.getInfo(ServiceList.YouTube, trackUrl)
+                val audio = pickAudioStream(info.audioStreams, "best")
+                    ?: throw java.io.IOException("No audio stream")
+                val video = pickVideoStreamAtHeight(info.videoOnlyStreams, height)
+                    ?: throw java.io.IOException("No video stream")
+                val dir = java.io.File(reactApplicationContext.filesDir, "videos")
+                dir.mkdirs()
+                val safe = id.replace(Regex("[^A-Za-z0-9_-]"), "_")
+                val vFile = java.io.File(dir, "$safe.video.${video.format?.suffix ?: "mp4"}")
+                val aFile = java.io.File(dir, "$safe.audio.${audio.format?.suffix ?: "m4a"}")
+                videoFile = vFile
+                audioFile = aFile
+
+                val videoSize = probeSize(video.content)
+                val audioSize = probeSize(audio.content)
+                progress[1] = if (videoSize > 0 && audioSize > 0) videoSize + audioSize else -1L
+
+                downloadToFile(id, audio.content, aFile, progress, cancel)
+                downloadToFile(id, video.content, vFile, progress, cancel)
+
+                val result: WritableMap = Arguments.createMap()
+                result.putString("videoPath", vFile.absolutePath)
+                result.putString("audioPath", aFile.absolutePath)
+                result.putInt("height", video.height)
+                result.putString("codec", video.codec ?: "")
+                result.putDouble("bytes", (vFile.length() + aFile.length()).toDouble())
+                promise.resolve(result)
+            } catch (e: Exception) {
+                videoFile?.delete()
+                audioFile?.delete()
+                if (cancel.get()) {
+                    promise.reject("CANCELLED", "Download cancelled")
+                } else {
+                    promise.reject("DOWNLOAD_ERROR", e.message, e)
+                }
+            } finally {
+                downloadProgress.remove(id)
+                downloadCancel.remove(id)
+                downloadCalls.remove(id)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getVideoDownloadProgress(id: String, promise: Promise) {
+        val p = downloadProgress[id]
+        val map: WritableMap = Arguments.createMap()
+        map.putDouble("received", (p?.get(0) ?: 0L).toDouble())
+        map.putDouble("total", (p?.get(1) ?: -1L).toDouble())
+        map.putBoolean("active", p != null)
+        promise.resolve(map)
+    }
+
+    @ReactMethod
+    fun cancelVideoDownload(id: String) {
+        downloadCancel[id]?.set(true)
+        downloadCalls[id]?.cancel()
+    }
+
+    @ReactMethod
+    fun deleteFile(path: String, promise: Promise) {
+        try {
+            promise.resolve(java.io.File(path).delete())
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getFreeSpace(promise: Promise) {
+        try {
+            val stat = android.os.StatFs(reactApplicationContext.filesDir.absolutePath)
+            promise.resolve(stat.availableBytes.toDouble())
+        } catch (e: Exception) {
+            promise.resolve(-1.0)
+        }
+    }
+
+    // Opens the video screen for an already downloaded video (works without internet).
+    @ReactMethod
+    fun playLocalVideo(videoPath: String, audioPath: String, startSeconds: Double, promise: Promise) {
+        try {
+            val activity = reactApplicationContext.currentActivity
+            if (activity == null) {
+                promise.reject("NO_ACTIVITY", "The app is not in the foreground")
+                return
+            }
+            if (!java.io.File(videoPath).exists() || !java.io.File(audioPath).exists()) {
+                promise.reject("MISSING_FILE", "The downloaded files are missing")
+                return
+            }
+            VideoBridge.begin(promise, "downloaded")
+            val intent = android.content.Intent(activity, VideoPlayerActivity::class.java)
+            intent.putExtra("videoUrl", "file://" + videoPath)
+            intent.putExtra("audioUrl", "file://" + audioPath)
+            intent.putExtra("startMs", (startSeconds * 1000).toLong())
+            activity.runOnUiThread { activity.startActivity(intent) }
+        } catch (e: Exception) {
+            promise.reject("VIDEO_ERROR", e.message, e)
         }
     }
 }

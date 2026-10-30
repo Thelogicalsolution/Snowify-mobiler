@@ -84,6 +84,14 @@ import {
   searchVideoOnly,
   getChannel,
   getChannelTab,
+  getVideoDownloadOptions,
+  startVideoDownload,
+  getVideoDownloadProgress,
+  cancelVideoDownload,
+  deleteFile,
+  getFreeSpace,
+  playLocalVideo,
+  VideoOption,
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
@@ -123,6 +131,7 @@ import {
 } from './SessionStore';
 import { loadHistory, saveHistory } from './HistoryStore';
 import { FollowedChannel, loadFollowing, saveFollowing } from './FollowStore';
+import { DownloadedVideo, loadVideoDownloads, saveVideoDownloads } from './VideoDownloadStore';
 import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from './LyricsStore';
 
 type SearchResult = Track;
@@ -134,7 +143,8 @@ type ViewName =
   | 'playlist'
   | 'settings'
   | 'channel'
-  | 'following';
+  | 'following'
+  | 'videoDownloads';
 
 const ACCENT = '#A855F7';
 const LIKE_RED = '#FF3B5C';
@@ -924,6 +934,14 @@ function NowPlayingArt({ uri, size, enabled }: { uri: string; size: number; enab
     />
   );
 }
+type VdJob = {
+  id: string;
+  track: Track;
+  height: number;
+  received: number;
+  total: number;
+};
+
 function AppContent() {
   const insets = useSafeAreaInsets();
 
@@ -1694,7 +1712,11 @@ function AppContent() {
       // ignore
     }
     try {
-      const res = await playVideo(track.url, startSec, 1080);
+      const local = videoDownloads.find(d => d.url === track.url);
+      if (local) logDebug(`Video: playing the downloaded copy (${local.height}p)`);
+      const res = local
+        ? await playLocalVideo(local.videoPath, local.audioPath, startSec)
+        : await playVideo(track.url, startSec, 1080);
       const stoppedAt = (res?.positionMs ?? 0) / 1000;
       logDebug(
         `Video: closed at ${formatTime(stoppedAt)}${res?.ended ? ' (ended)' : ''} [${res?.label ?? ''}]${
@@ -1839,6 +1861,16 @@ function AppContent() {
             </Text>
           ) : null}
         </View>
+        <TouchableOpacity
+          hitSlop={10}
+          onPress={() => startVideoDownloadFlow(asTrack)}
+          style={{ marginRight: 12 }}
+        >
+          <Download
+            size={18}
+            color={videoDownloads.some(d => d.url === v.url) ? resolvedAccent : TEXT_DIM}
+          />
+        </TouchableOpacity>
         <TouchableOpacity hitSlop={10} onPress={() => playAtIndex([asTrack], 0, true)}>
           <Headphones size={18} color={TEXT_DIM} />
         </TouchableOpacity>
@@ -2001,6 +2033,189 @@ function AppContent() {
     );
     logDebug(`${isOn ? 'Unfollowed' : 'Followed'} channel: ${channel.name}`);
     ToastAndroid.show(isOn ? channelText.unfollowedToast : channelText.followedToast, ToastAndroid.SHORT);
+  }
+
+  const vdText =
+    settings.language === 'uk'
+      ? {
+          title: 'Завантажити відео',
+          menuRow: 'Завантажити відео',
+          downloading: 'Завантаження',
+          keepOpen: 'не закривайте застосунок',
+          started: 'Завантаження почалося. Не закривайте застосунок.',
+          done: 'Завантажено',
+          failed: 'Не вдалося завантажити відео',
+          optionsFailed: 'Не вдалося дізнатися доступні якості',
+          already: 'Це відео вже завантажено',
+          inProgress: 'Це відео вже завантажується',
+          noSpace: 'Недостатньо місця на телефоні',
+          bigTitle: 'Великий файл',
+          bigMessage: (s: string) => `Це завантаження займе близько ${s}. Продовжити?`,
+          download: 'Завантажити',
+          free: (s: string) => `Вільно: ${s}`,
+          screenTitle: 'Завантажені відео',
+          none: 'Завантажених відео ще немає',
+          deleteTitle: 'Видалити завантажене відео?',
+        }
+      : {
+          title: 'Download video',
+          menuRow: 'Download video',
+          downloading: 'Downloading',
+          keepOpen: 'keep the app open',
+          started: 'Download started. Keep the app open.',
+          done: 'Downloaded',
+          failed: 'Could not download the video',
+          optionsFailed: 'Could not check the available qualities',
+          already: 'This video is already downloaded',
+          inProgress: 'This video is already downloading',
+          noSpace: 'Not enough free space on the phone',
+          bigTitle: 'Large file',
+          bigMessage: (s: string) => `This download will take about ${s}. Continue?`,
+          download: 'Download',
+          free: (s: string) => `Free space: ${s}`,
+          screenTitle: 'Downloaded videos',
+          none: 'No downloaded videos yet',
+          deleteTitle: 'Delete the downloaded video?',
+        };
+
+  const [videoDownloads, setVideoDownloads] = useState<DownloadedVideo[]>([]);
+  const [videoDownloadsLoaded, setVideoDownloadsLoaded] = useState(false);
+  const [vdJobs, setVdJobs] = useState<VdJob[]>([]);
+  const vdJobsRef = useRef<VdJob[]>([]);
+  vdJobsRef.current = vdJobs;
+  const [vdTarget, setVdTarget] = useState<Track | null>(null);
+  const [vdOptions, setVdOptions] = useState<VideoOption[] | null>(null);
+  const [vdChecking, setVdChecking] = useState(false);
+  const [vdFree, setVdFree] = useState(-1);
+  const vdFlowToken = useRef(0);
+  const vdFirst = vdJobs[0];
+  const vdPct =
+    vdFirst && vdFirst.total > 0 ? Math.min(100, Math.round((vdFirst.received / vdFirst.total) * 100)) : 0;
+
+  useEffect(() => {
+    loadVideoDownloads().then(list => {
+      setVideoDownloads(prev => [...prev, ...list.filter(x => !prev.some(p => p.url === x.url))]);
+      setVideoDownloadsLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!videoDownloadsLoaded) return;
+    saveVideoDownloads(videoDownloads);
+  }, [videoDownloads, videoDownloadsLoaded]);
+
+  // Poll the native side for download progress while a download is running.
+  useEffect(() => {
+    if (vdJobs.length === 0) return;
+    const timer = setInterval(async () => {
+      const current = vdJobsRef.current;
+      const updated = await Promise.all(
+        current.map(async j => {
+          try {
+            const p = await getVideoDownloadProgress(j.id);
+            return p.active ? { ...j, received: p.received, total: p.total } : j;
+          } catch {
+            return j;
+          }
+        }),
+      );
+      setVdJobs(prev => prev.map(j => updated.find(u => u.id === j.id) ?? j));
+    }, 700);
+    return () => clearInterval(timer);
+  }, [vdJobs.length]);
+
+  function formatSize(bytes: number): string {
+    if (!isFinite(bytes) || bytes <= 0) return '?';
+    if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+    return `${Math.max(1, Math.round(bytes / 1048576))} MB`;
+  }
+
+  async function startVideoDownloadFlow(track: Track) {
+    if (videoDownloads.some(d => d.url === track.url)) {
+      ToastAndroid.show(vdText.already, ToastAndroid.SHORT);
+      return;
+    }
+    if (vdJobs.some(j => j.track.url === track.url)) {
+      ToastAndroid.show(vdText.inProgress, ToastAndroid.SHORT);
+      return;
+    }
+    if (!(await downloadsAllowed())) return;
+    const token = ++vdFlowToken.current;
+    setVdTarget(track);
+    setVdOptions(null);
+    setVdChecking(true);
+    try {
+      const [options, free] = await Promise.all([getVideoDownloadOptions(track.url), getFreeSpace()]);
+      if (token !== vdFlowToken.current) return;
+      setVdOptions(options);
+      setVdFree(free);
+      logDebug(`Video download options for "${track.name}": ${options.map(o => `${o.height}p`).join(', ')}`);
+    } catch (e: any) {
+      if (token !== vdFlowToken.current) return;
+      logDebug(`Video download options failed: ${e?.message ?? e}`);
+      ToastAndroid.show(vdText.optionsFailed, ToastAndroid.LONG);
+      setVdTarget(null);
+    } finally {
+      if (token === vdFlowToken.current) setVdChecking(false);
+    }
+  }
+
+  function chooseVideoQuality(opt: VideoOption) {
+    const track = vdTarget;
+    if (!track) return;
+    if (opt.bytes > 0 && vdFree > 0 && opt.bytes > vdFree * 0.9) {
+      ToastAndroid.show(vdText.noSpace, ToastAndroid.LONG);
+      return;
+    }
+    const go = () => {
+      vdFlowToken.current++;
+      setVdTarget(null);
+      beginVideoDownload(track, opt.height);
+    };
+    if (opt.bytes > 1073741824) {
+      Alert.alert(vdText.bigTitle, vdText.bigMessage(formatSize(opt.bytes)), [
+        { text: t.cancel, style: 'cancel' },
+        { text: vdText.download, onPress: go },
+      ]);
+    } else {
+      go();
+    }
+  }
+
+  async function beginVideoDownload(track: Track, height: number) {
+    const id = `v${Date.now()}`;
+    setVdJobs(prev => [...prev, { id, track, height, received: 0, total: -1 }]);
+    logDebug(`Video download started: "${track.name}" at ${height}p`);
+    ToastAndroid.show(vdText.started, ToastAndroid.LONG);
+    try {
+      const res = await startVideoDownload(id, track.url, height);
+      const entry: DownloadedVideo = {
+        url: track.url,
+        name: track.name,
+        thumbnailUrl: track.thumbnailUrl,
+        videoPath: res.videoPath,
+        audioPath: res.audioPath,
+        height: res.height,
+        bytes: res.bytes,
+        at: Date.now(),
+      };
+      setVideoDownloads(prev => [entry, ...prev.filter(d => d.url !== track.url)]);
+      logDebug(`Video downloaded: "${track.name}" ${res.height}p, ${formatSize(res.bytes)}`);
+      ToastAndroid.show(`${vdText.done}: ${track.name}`, ToastAndroid.SHORT);
+    } catch (e: any) {
+      const cancelled = String(e?.code ?? '') === 'CANCELLED' || /cancel/i.test(String(e?.message ?? ''));
+      logDebug(`Video download ${cancelled ? 'cancelled' : 'failed'}: ${e?.message ?? e}`);
+      if (!cancelled) ToastAndroid.show(vdText.failed, ToastAndroid.LONG);
+    } finally {
+      setVdJobs(prev => prev.filter(j => j.id !== id));
+    }
+  }
+
+  async function deleteVideoDownload(d: DownloadedVideo) {
+    await deleteFile(d.videoPath);
+    await deleteFile(d.audioPath);
+    setVideoDownloads(prev => prev.filter(x => x.url !== d.url));
+    logDebug(`Deleted downloaded video: "${d.name}"`);
   }
 
   function recordHistory(track: Track) {
@@ -2505,6 +2720,7 @@ function AppContent() {
   const libraryTabActive =
     view === 'library' ||
     view === 'following' ||
+    view === 'videoDownloads' ||
     (view === 'playlist' && viewingPlaylistId !== 'remote') ||
     (view === 'channel' && (channelFrom === 'library' || channelFrom === 'playlist' || channelFrom === 'following'));
   const videoTabActive = view === 'video' || (view === 'channel' && channelFrom === 'video');
@@ -3433,6 +3649,12 @@ function AppContent() {
           setPlaylists([]);
           setDownloads([]);
           setFollowing([]);
+          vdJobsRef.current.forEach(j => cancelVideoDownload(j.id));
+          videoDownloads.forEach(d => {
+            deleteFile(d.videoPath);
+            deleteFile(d.audioPath);
+          });
+          setVideoDownloads([]);
           setHistory([]);
           setSettings(DEFAULT_SETTINGS);
           logDebug('All data reset by user');
@@ -3682,6 +3904,15 @@ function AppContent() {
                     <View style={styles.trackInfo}>
                       <Text style={styles.trackTitle}>{channelText.followingTitle}</Text>
                       <Text style={styles.playlistSubtitle}>{following.length}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('videoDownloads')}>
+                    <View style={styles.playlistIcon}>
+                      <VideoIcon size={20} color={resolvedAccent} />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>{vdText.screenTitle}</Text>
+                      <Text style={styles.playlistSubtitle}>{videoDownloads.length}</Text>
                     </View>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -3963,6 +4194,105 @@ function AppContent() {
                 </FadeInRow>
               )}
               ListEmptyComponent={<Text style={styles.emptyText}>{channelText.noFollowing}</Text>}
+            />
+          </>
+        )}
+
+        {view === 'videoDownloads' && (
+          <>
+            <View style={styles.playlistDetailHeader}>
+              <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
+                <ChevronLeft size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+              <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+                {vdText.screenTitle}
+              </Text>
+            </View>
+            <FlatList
+              data={videoDownloads}
+              keyExtractor={d => d.url}
+              contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad }]}
+              ListHeaderComponent={
+                vdJobs.length > 0 ? (
+                  <View>
+                    {vdJobs.map(j => (
+                      <View key={j.id} style={styles.vdJobRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.trackTitle} numberOfLines={1}>
+                            {vdText.downloading}: {j.track.name}
+                          </Text>
+                          <View style={styles.vdBarTrack}>
+                            <View
+                              style={[
+                                styles.vdBarFill,
+                                {
+                                  width: `${j.total > 0 ? Math.min(100, Math.round((j.received / j.total) * 100)) : 0}%`,
+                                  backgroundColor: resolvedAccent,
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.vdBannerHint}>
+                            {formatSize(j.received)}
+                            {j.total > 0 ? ` / ${formatSize(j.total)}` : ''} · {j.height}p
+                          </Text>
+                        </View>
+                        <TouchableOpacity hitSlop={10} onPress={() => cancelVideoDownload(j.id)}>
+                          <X size={20} color={TEXT_DIM} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                ) : null
+              }
+              renderItem={({ item, index }) => (
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  <TouchableOpacity
+                    style={styles.videoRow}
+                    onPress={() =>
+                      watchVideo({ url: item.url, name: item.name, thumbnailUrl: item.thumbnailUrl })
+                    }
+                  >
+                    <View style={styles.videoThumbWrap}>
+                      {item.thumbnailUrl ? (
+                        <FadeImage
+                          uri={item.thumbnailUrl}
+                          style={styles.videoThumb}
+                          enabled={settings.animationsEnabled}
+                        />
+                      ) : (
+                        <View style={styles.videoThumb} />
+                      )}
+                    </View>
+                    <View style={styles.videoInfo}>
+                      <Text style={styles.trackTitle} numberOfLines={2}>
+                        {item.name}
+                      </Text>
+                      <Text style={styles.playlistSubtitle} numberOfLines={1}>
+                        {item.height}p · {formatSize(item.bytes)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      hitSlop={10}
+                      onPress={() =>
+                        Alert.alert(vdText.deleteTitle, item.name, [
+                          { text: t.cancel, style: 'cancel' },
+                          {
+                            text: t.deleteButton,
+                            style: 'destructive',
+                            onPress: () => deleteVideoDownload(item),
+                          },
+                        ])
+                      }
+                    >
+                      <X size={18} color={TEXT_DIM} />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                </FadeInRow>
+              )}
+              ListEmptyComponent={
+                vdJobs.length === 0 ? <Text style={styles.emptyText}>{vdText.none}</Text> : undefined
+              }
             />
           </>
         )}
@@ -4481,6 +4811,18 @@ function AppContent() {
                 if (!addToPlaylistTarget) return;
                 const picked = addToPlaylistTarget;
                 setAddToPlaylistTarget(null);
+                startVideoDownloadFlow(picked);
+              }}
+            >
+              <Download size={18} color="#FFFFFF" />
+              <Text style={styles.modalActionText}>{vdText.menuRow}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalActionRow}
+              onPress={() => {
+                if (!addToPlaylistTarget) return;
+                const picked = addToPlaylistTarget;
+                setAddToPlaylistTarget(null);
                 watchVideo(picked);
               }}
             >
@@ -4756,7 +5098,35 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-    {selected.length > 0 && (
+    {vdJobs.length > 0 && vdFirst && (
+        <View
+          style={[
+            styles.vdBanner,
+            { top: insets.top + 8 + (selected.length > 0 ? 56 : 0) },
+          ]}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.vdBannerTitle} numberOfLines={1}>
+              {vdText.downloading}: {vdFirst.track.name}
+              {vdJobs.length > 1 ? ` (+${vdJobs.length - 1})` : ''}
+            </Text>
+            <View style={styles.vdBarTrack}>
+              <View
+                style={[styles.vdBarFill, { width: `${vdPct}%`, backgroundColor: resolvedAccent }]}
+              />
+            </View>
+            <Text style={styles.vdBannerHint}>
+              {vdFirst.total > 0 ? `${vdPct}% · ` : ''}
+              {vdText.keepOpen}
+            </Text>
+          </View>
+          <TouchableOpacity hitSlop={10} onPress={() => cancelVideoDownload(vdFirst.id)}>
+            <X size={20} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {selected.length > 0 && (
         <View style={styles.selectionBar}>
           <TouchableOpacity hitSlop={10} onPress={() => setSelected([])}>
             <X size={20} color="#FFFFFF" />
@@ -4961,6 +5331,54 @@ function AppContent() {
           </Animated.View>
         </Animated.View>
       )}
+
+      <Modal
+        visible={!!vdTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          vdFlowToken.current++;
+          setVdTarget(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{vdText.title}</Text>
+            <Text style={styles.queueNowPlaying} numberOfLines={2}>
+              {vdTarget ? vdTarget.name : ''}
+            </Text>
+            {vdChecking || !vdOptions ? (
+              <ActivityIndicator color={resolvedAccent} style={{ marginVertical: 16 }} />
+            ) : (
+              <>
+                {vdOptions.map(o => (
+                  <TouchableOpacity
+                    key={o.height}
+                    style={styles.modalActionRow}
+                    onPress={() => chooseVideoQuality(o)}
+                  >
+                    <Download size={18} color="#FFFFFF" />
+                    <Text style={styles.modalActionText}>{o.height}p</Text>
+                    <Text style={[styles.modalActionText, { color: TEXT_DIM, marginLeft: 'auto' }]}>
+                      {o.bytes > 0 ? formatSize(o.bytes) : '?'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                {vdFree > 0 && <Text style={styles.modalEmptyText}>{vdText.free(formatSize(vdFree))}</Text>}
+              </>
+            )}
+            <TouchableOpacity
+              style={styles.modalCancelButton}
+              onPress={() => {
+                vdFlowToken.current++;
+                setVdTarget(null);
+              }}
+            >
+              <Text style={styles.modalCancelText}>{t.cancel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={lyricsVisible}
@@ -5294,6 +5712,40 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  vdBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: CARD,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    zIndex: 18,
+    elevation: 7,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BORDER,
+  },
+  vdBannerTitle: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  vdBannerHint: { color: TEXT_DIM, fontSize: 11, marginTop: 4 },
+  vdBarTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: BORDER,
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  vdBarFill: { height: 4, borderRadius: 2 },
+  vdJobRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
   channelHeader: {
     flexDirection: 'row',
     alignItems: 'center',

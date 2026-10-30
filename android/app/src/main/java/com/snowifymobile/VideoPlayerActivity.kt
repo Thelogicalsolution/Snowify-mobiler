@@ -24,6 +24,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MergingMediaSource
@@ -156,7 +157,7 @@ class VideoPlayerActivity : Activity() {
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
             .setAllowCrossProtocolRedirects(true)
-        val sources = ProgressiveMediaSource.Factory(factory)
+        val sources = ProgressiveMediaSource.Factory(DefaultDataSource.Factory(this, factory))
         val videoSource = sources.createMediaSource(MediaItem.fromUri(videoUrl))
         val source = if (audioUrl.isNotEmpty()) {
             MergingMediaSource(videoSource, sources.createMediaSource(MediaItem.fromUri(audioUrl)))

@@ -159,3 +159,63 @@ export async function getChannelTab(
 ): Promise<ChannelPage> {
   return NewPipeExtractorModule.getChannelTab(channelUrl, tab, pageToken);
 }
+
+export type VideoOption = {
+  height: number;
+  codec: string;
+  bytes: number;
+};
+
+export type VideoDownloadResult = {
+  videoPath: string;
+  audioPath: string;
+  height: number;
+  codec: string;
+  bytes: number;
+};
+
+export type DownloadProgress = {
+  received: number;
+  total: number;
+  active: boolean;
+};
+
+// Qualities that can be downloaded for a video, with total sizes (bytes, -1 = unknown).
+export async function getVideoDownloadOptions(videoUrl: string): Promise<VideoOption[]> {
+  return NewPipeExtractorModule.getVideoDownloadOptions(videoUrl);
+}
+
+// Downloads the video and its sound into the app's storage; resolves with the file paths.
+export async function startVideoDownload(
+  id: string,
+  trackUrl: string,
+  height: number,
+): Promise<VideoDownloadResult> {
+  return NewPipeExtractorModule.startVideoDownload(id, trackUrl, height);
+}
+
+export async function getVideoDownloadProgress(id: string): Promise<DownloadProgress> {
+  return NewPipeExtractorModule.getVideoDownloadProgress(id);
+}
+
+export function cancelVideoDownload(id: string): void {
+  NewPipeExtractorModule.cancelVideoDownload(id);
+}
+
+export async function deleteFile(path: string): Promise<boolean> {
+  return NewPipeExtractorModule.deleteFile(path);
+}
+
+// Free space of the app's storage in bytes (-1 = unknown).
+export async function getFreeSpace(): Promise<number> {
+  return NewPipeExtractorModule.getFreeSpace();
+}
+
+// Plays a downloaded video (video file plus sound file) in the native video screen.
+export async function playLocalVideo(
+  videoPath: string,
+  audioPath: string,
+  startSeconds: number,
+): Promise<VideoResult> {
+  return NewPipeExtractorModule.playLocalVideo(videoPath, audioPath, startSeconds);
+}

@@ -56,6 +56,7 @@ export async function resetAllData(): Promise<string> {
     'snowify_history',
     'snowify_lyrics',
     'snowify_following',
+    'snowify_video_downloads',
     SETTINGS_KEY,
   ];
   const failures: string[] = [];
