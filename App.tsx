@@ -68,6 +68,9 @@ import {
   Video as VideoIcon,
   Headphones,
   Users,
+  RotateCcw,
+  RotateCw,
+  BookOpen,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -132,6 +135,16 @@ import {
 import { loadHistory, saveHistory } from './HistoryStore';
 import { FollowedChannel, loadFollowing, saveFollowing } from './FollowStore';
 import { DownloadedVideo, loadVideoDownloads, saveVideoDownloads } from './VideoDownloadStore';
+import {
+  BookEntry,
+  BookMap,
+  LONG_FORM_SECONDS,
+  looksLikeBook,
+  formatHM,
+  formatClock,
+  loadBooks,
+  saveBooks,
+} from './BookStore';
 import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from './LyricsStore';
 
 type SearchResult = Track;
@@ -144,7 +157,8 @@ type ViewName =
   | 'settings'
   | 'channel'
   | 'following'
-  | 'videoDownloads';
+  | 'videoDownloads'
+  | 'audiobooks';
 
 const ACCENT = '#A855F7';
 const LIKE_RED = '#FF3B5C';
@@ -1468,7 +1482,7 @@ function AppContent() {
           loading: 'Loading…',
         };
 
-  const [searchMode, setSearchMode] = useState<'songs' | 'playlists'>('songs');
+  const [searchMode, setSearchMode] = useState<'songs' | 'playlists' | 'books'>('songs');
   const [playlistResults, setPlaylistResults] = useState<PlaylistResult[]>([]);
   const [remote, setRemote] = useState<{
     url: string;
@@ -1696,7 +1710,8 @@ function AppContent() {
     videoBusyRef.current = true;
     const sameTrack = nowPlaying?.url === track.url;
     const wasPlaying = playing;
-    let startSec = 0;
+    const savedPos = booksRef.current[track.url];
+    let startSec = savedPos && !savedPos.finished ? savedPos.position : 0;
     if (sameTrack) {
       try {
         startSec = TrackPlayer.getProgress().position || 0;
@@ -2218,6 +2233,221 @@ function AppContent() {
     logDebug(`Deleted downloaded video: "${d.name}"`);
   }
 
+  const bookText =
+    settings.language === 'uk'
+      ? {
+          pill: 'Аудіокниги',
+          continue: 'Продовжити слухати',
+          screenTitle: 'Аудіокниги',
+          empty: 'Аудіокниг ще немає. Знайдіть їх через перемикач «Аудіокниги» або позначте книгу кнопкою в програвачі.',
+          resuming: 'Продовжую з',
+          left: 'залишилось',
+          finished: 'Прослухано',
+          added: 'Додано до аудіокниг',
+          removed: 'Прибрано з аудіокниг',
+          speedTitle: 'Швидкість відтворення',
+        }
+      : {
+          pill: 'Audiobooks',
+          continue: 'Continue listening',
+          screenTitle: 'Audiobooks',
+          empty: 'No audiobooks yet. Find some with the Audiobooks switch in Search, or mark a book with the book button in the player.',
+          resuming: 'Resuming at',
+          left: 'left',
+          finished: 'Finished',
+          added: 'Added to audiobooks',
+          removed: 'Removed from audiobooks',
+          speedTitle: 'Playback speed',
+        };
+
+  const [books, setBooks] = useState<BookMap>({});
+  const [booksLoaded, setBooksLoaded] = useState(false);
+  const booksRef = useRef<BookMap>({});
+  booksRef.current = books;
+  const [bookResults, setBookResults] = useState<VideoSearchResult[]>([]);
+  const [speedModalVisible, setSpeedModalVisible] = useState(false);
+  const progressEventLogs = useRef(0);
+
+  useEffect(() => {
+    loadBooks().then(saved => {
+      setBooks(prev => ({ ...saved, ...prev }));
+      setBooksLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!booksLoaded) return;
+    saveBooks(books);
+  }, [books, booksLoaded]);
+
+  function upsertBook(url: string, patch: Partial<BookEntry>) {
+    setBooks(prev => {
+      const old = prev[url];
+      const entry: BookEntry = {
+        url,
+        name: patch.name ?? old?.name ?? url,
+        thumbnailUrl: patch.thumbnailUrl ?? old?.thumbnailUrl ?? '',
+        position: patch.position ?? old?.position ?? 0,
+        duration: patch.duration ?? old?.duration ?? 0,
+        updatedAt: Date.now(),
+        isBook: patch.isBook ?? old?.isBook ?? false,
+        finished: patch.finished ?? old?.finished ?? false,
+      };
+      return { ...prev, [url]: entry };
+    });
+  }
+
+  // Remembers where a long track (audiobook or long video) stopped.
+  function trackBookProgress(url: string, position: number, duration: number) {
+    if (!(duration >= LONG_FORM_SECONDS) || !(position >= 0)) return;
+    const tr = playbackStateRef.current.queue.find(q => q.url === url);
+    const finished = position >= duration - 45;
+    const old = booksRef.current[url];
+    upsertBook(url, {
+      name: tr?.name,
+      thumbnailUrl: tr?.thumbnailUrl,
+      position: finished ? 0 : position,
+      duration,
+      finished,
+      isBook: old ? old.isBook : looksLikeBook(tr?.name ?? '', '', duration),
+    });
+  }
+
+  function toggleBook(track: Track) {
+    const old = booksRef.current[track.url];
+    const next = !(old && old.isBook);
+    upsertBook(track.url, { name: track.name, thumbnailUrl: track.thumbnailUrl, isBook: next });
+    logDebug(`Audiobook ${next ? 'added' : 'removed'}: ${track.name}`);
+    ToastAndroid.show(next ? bookText.added : bookText.removed, ToastAndroid.SHORT);
+  }
+
+  function playBook(b: BookEntry) {
+    playAtIndex([{ url: b.url, name: b.name, thumbnailUrl: b.thumbnailUrl }], 0, true);
+  }
+
+  function listenBookResult(v: VideoSearchResult) {
+    const track: Track = { url: v.url, name: v.name, thumbnailUrl: v.thumbnailUrl };
+    upsertBook(v.url, { name: v.name, thumbnailUrl: v.thumbnailUrl, duration: v.duration, isBook: true });
+    playAtIndex([track], 0, true);
+  }
+
+  // Native progress events keep working with the screen off, so they save the position there.
+  useEffect(() => {
+    let last = 0;
+    const sub = TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, () => {
+      const now = Date.now();
+      if (now - last < 20000) return;
+      last = now;
+      try {
+        const p = TrackPlayer.getProgress();
+        const url = expectedUrlRef.current;
+        if (progressEventLogs.current < 6) {
+          progressEventLogs.current++;
+          logDebug(`Progress event while ${AppState.currentState}: ${Math.round(p.position)}s of ${Math.round(p.duration)}s`);
+        }
+        if (url && !pendingSeekRef.current && p.duration >= LONG_FORM_SECONDS) {
+          trackBookProgress(url, p.position, p.duration);
+        }
+      } catch {
+        // ignore
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Long tracks play at the chosen speed; songs always play at normal speed.
+  const isLongForm = progress.duration >= LONG_FORM_SECONDS;
+  useEffect(() => {
+    try {
+      TrackPlayer.setPlaybackSpeed(isLongForm ? settings.playbackSpeed : 1);
+    } catch {
+      // ignore
+    }
+  }, [isLongForm, settings.playbackSpeed, nowPlaying?.url]);
+
+  const bookList = Object.values(books)
+    .filter(b => b.isBook)
+    .sort((a, b) =>
+      a.finished === b.finished ? b.updatedAt - a.updatedAt : a.finished ? 1 : -1,
+    );
+  const continueBooks = bookList.filter(b => !b.finished && b.position >= 30).slice(0, 3);
+
+  function renderBookRow(b: BookEntry, compact: boolean = false) {
+    const ratio = b.duration > 0 ? Math.min(1, b.position / b.duration) : 0;
+    const left = b.finished
+      ? bookText.finished
+      : b.duration > 0
+      ? `${formatHM(b.duration - b.position)} ${bookText.left}`
+      : '';
+    const isCurrent = nowPlaying?.url === b.url;
+    return (
+      <TouchableOpacity key={b.url} style={styles.videoRow} onPress={() => playBook(b)}>
+        <View style={styles.videoThumbWrap}>
+          {b.thumbnailUrl ? (
+            <FadeImage uri={b.thumbnailUrl} style={styles.videoThumb} enabled={settings.animationsEnabled} />
+          ) : (
+            <View style={styles.videoThumb} />
+          )}
+        </View>
+        <View style={styles.videoInfo}>
+          <Text style={[styles.trackTitle, isCurrent && { color: resolvedAccent }]} numberOfLines={2}>
+            {b.name}
+          </Text>
+          <View style={styles.vdBarTrack}>
+            <View
+              style={[
+                styles.vdBarFill,
+                { width: `${Math.round(ratio * 100)}%`, backgroundColor: resolvedAccent },
+              ]}
+            />
+          </View>
+          <Text style={styles.vdBannerHint}>{left}</Text>
+        </View>
+        {!compact && (
+          <TouchableOpacity hitSlop={10} onPress={() => upsertBook(b.url, { isBook: false })}>
+            <X size={18} color={TEXT_DIM} />
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
+    );
+  }
+
+  function renderBookResultRow(v: VideoSearchResult) {
+    const saved = books[v.url];
+    const hint =
+      saved && !saved.finished && saved.position >= 30
+        ? `${formatHM(v.duration - saved.position)} ${bookText.left}`
+        : formatHM(v.duration);
+    return (
+      <TouchableOpacity key={v.url} style={styles.videoRow} onPress={() => listenBookResult(v)}>
+        <View style={styles.videoThumbWrap}>
+          {v.thumbnailUrl ? (
+            <FadeImage uri={v.thumbnailUrl} style={styles.videoThumb} enabled={settings.animationsEnabled} />
+          ) : (
+            <View style={styles.videoThumb} />
+          )}
+        </View>
+        <View style={styles.videoInfo}>
+          <Text style={styles.trackTitle} numberOfLines={2}>
+            {v.name}
+          </Text>
+          {v.uploader ? (
+            <Text style={styles.playlistSubtitle} numberOfLines={1}>
+              {v.uploader}
+            </Text>
+          ) : null}
+          <Text style={styles.vdBannerHint}>{hint}</Text>
+        </View>
+        <TouchableOpacity
+          hitSlop={10}
+          onPress={() => watchVideo({ url: v.url, name: v.name, thumbnailUrl: v.thumbnailUrl })}
+        >
+          <VideoIcon size={18} color={TEXT_DIM} />
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
+  }
+
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
   }
@@ -2321,6 +2551,7 @@ function AppContent() {
       logDebug(`Position saved: ${formatTime(safePosition)}, volume ${Math.round(volumeRef.current * 100)}%`);
     }
     void savePlaybackPosition({ url, position: safePosition, volume: volumeRef.current });
+    if (!pending) trackBookProgress(url, position, duration);
   }
 
   // Restore the last session once settings and downloads are loaded.
@@ -2721,6 +2952,7 @@ function AppContent() {
     view === 'library' ||
     view === 'following' ||
     view === 'videoDownloads' ||
+    view === 'audiobooks' ||
     (view === 'playlist' && viewingPlaylistId !== 'remote') ||
     (view === 'channel' && (channelFrom === 'library' || channelFrom === 'playlist' || channelFrom === 'following'));
   const videoTabActive = view === 'video' || (view === 'channel' && channelFrom === 'video');
@@ -3017,6 +3249,12 @@ function AppContent() {
       setSearchError(null);
       logDebug(`Searching: "${query}"`);
       try {
+        if (searchMode === 'books') {
+          const foundBooks = (await searchVideoOnly(`${query} audiobook`)).filter(v => v.duration >= 1800);
+          setBookResults(foundBooks);
+          logDebug(`Audiobook results: ${foundBooks.length} for "${query}"`);
+          return;
+        }
         if (searchMode === 'playlists') {
           const foundPlaylists = await searchPlaylists(query);
           setPlaylistResults(foundPlaylists);
@@ -3421,6 +3659,17 @@ function AppContent() {
       prefetchingUrlRef.current = null;
       nextQueuedRef.current = null;
       expectedUrlRef.current = item.url;
+      const savedBook = booksRef.current[item.url];
+      if (
+        savedBook &&
+        !savedBook.finished &&
+        savedBook.position >= 30 &&
+        savedBook.duration - savedBook.position > 60
+      ) {
+        pendingSeekRef.current = { url: item.url, position: savedBook.position };
+        logDebug(`Resuming "${item.name}" at ${formatClock(savedBook.position)}`);
+        ToastAndroid.show(`${bookText.resuming} ${formatClock(savedBook.position)}`, ToastAndroid.SHORT);
+      }
 
       TrackPlayer.setMediaItems([mediaItem]);
       TrackPlayer.play();
@@ -3655,6 +3904,7 @@ function AppContent() {
             deleteFile(d.audioPath);
           });
           setVideoDownloads([]);
+          setBooks({});
           setHistory([]);
           setSettings(DEFAULT_SETTINGS);
           logDebug('All data reset by user');
@@ -3816,6 +4066,15 @@ function AppContent() {
               >
                 <Text style={styles.searchModePillText}>{remoteText.playlists}</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.searchModePill,
+                  searchMode === 'books' && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+                ]}
+                onPress={() => setSearchMode('books')}
+              >
+                <Text style={styles.searchModePillText}>{bookText.pill}</Text>
+              </TouchableOpacity>
             </View>
 
             {searching && (
@@ -3825,7 +4084,15 @@ function AppContent() {
             {searchError && <Text style={styles.errorText}>{searchError}</Text>}
 
             <FlatList
-              data={(searchMode === 'songs' ? results : playlistResults) as any[]}
+              data={(searchMode === 'songs' ? results : searchMode === 'playlists' ? playlistResults : bookResults) as any[]}
+              ListHeaderComponent={
+                !query.trim() && searchMode === 'songs' && continueBooks.length > 0 ? (
+                  <View style={{ marginBottom: 8 }}>
+                    <Text style={styles.continueTitle}>{bookText.continue}</Text>
+                    {continueBooks.map(b => renderBookRow(b, true))}
+                  </View>
+                ) : null
+              }
               keyExtractor={item => item.url}
               contentContainerStyle={[
                 styles.listContent,
@@ -3833,7 +4100,7 @@ function AppContent() {
               ]}
               renderItem={({ item, index }) =>
                 <FadeInRow index={index} enabled={settings.animationsEnabled}>
-                  {searchMode === 'songs' ? renderTrackRow(item, index, results) : renderPlaylistRow(item as any)}
+                  {searchMode === 'songs' ? renderTrackRow(item, index, results) : searchMode === 'playlists' ? renderPlaylistRow(item as any) : renderBookResultRow(item as any)}
                 </FadeInRow>
               }
               ListEmptyComponent={
@@ -3913,6 +4180,15 @@ function AppContent() {
                     <View style={styles.trackInfo}>
                       <Text style={styles.trackTitle}>{vdText.screenTitle}</Text>
                       <Text style={styles.playlistSubtitle}>{videoDownloads.length}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('audiobooks')}>
+                    <View style={styles.playlistIcon}>
+                      <BookOpen size={20} color={resolvedAccent} />
+                    </View>
+                    <View style={styles.trackInfo}>
+                      <Text style={styles.trackTitle}>{bookText.screenTitle}</Text>
+                      <Text style={styles.playlistSubtitle}>{bookList.length}</Text>
                     </View>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -4293,6 +4569,30 @@ function AppContent() {
               ListEmptyComponent={
                 vdJobs.length === 0 ? <Text style={styles.emptyText}>{vdText.none}</Text> : undefined
               }
+            />
+          </>
+        )}
+
+        {view === 'audiobooks' && (
+          <>
+            <View style={styles.playlistDetailHeader}>
+              <TouchableOpacity onPress={() => changeView('library')} hitSlop={10}>
+                <ChevronLeft size={24} color="#FFFFFF" />
+              </TouchableOpacity>
+              <Text style={styles.playlistDetailTitle} numberOfLines={1}>
+                {bookText.screenTitle}
+              </Text>
+            </View>
+            <FlatList
+              data={bookList}
+              keyExtractor={b => b.url}
+              contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad }]}
+              renderItem={({ item, index }) => (
+                <FadeInRow index={index} enabled={settings.animationsEnabled}>
+                  {renderBookRow(item)}
+                </FadeInRow>
+              )}
+              ListEmptyComponent={<Text style={styles.emptyText}>{bookText.empty}</Text>}
             />
           </>
         )}
@@ -5292,6 +5592,25 @@ function AppContent() {
               </TouchableOpacity>
             </View>
 
+            {isLongForm && (
+              <View style={styles.npLongRow}>
+                <TouchableOpacity hitSlop={10} style={styles.skipBtn} onPress={() => TrackPlayer.seekBy(-15)}>
+                  <RotateCcw size={30} color="#FFFFFF" />
+                  <Text style={styles.skipBtnText}>15</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionPill, { borderColor: resolvedAccent }]}
+                  onPress={() => setSpeedModalVisible(true)}
+                >
+                  <Text style={styles.actionPillText}>{settings.playbackSpeed}x</Text>
+                </TouchableOpacity>
+                <TouchableOpacity hitSlop={10} style={styles.skipBtn} onPress={() => TrackPlayer.seekBy(30)}>
+                  <RotateCw size={30} color="#FFFFFF" />
+                  <Text style={styles.skipBtnText}>30</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.npActions}>
               <AnimatedHeart
                 liked={isLiked(nowPlaying.url)}
@@ -5299,6 +5618,12 @@ function AppContent() {
                 size={26}
                 animationsEnabled={settings.animationsEnabled}
               />
+              <TouchableOpacity hitSlop={10} onPress={() => toggleBook(nowPlaying)}>
+                <BookOpen
+                  size={24}
+                  color={books[nowPlaying.url] && books[nowPlaying.url].isBook ? resolvedAccent : '#FFFFFF'}
+                />
+              </TouchableOpacity>
               <TouchableOpacity hitSlop={10} onPress={() => setLyricsVisible(true)}>
                 <Mic size={24} color="#FFFFFF" />
               </TouchableOpacity>
@@ -5374,6 +5699,38 @@ function AppContent() {
                 setVdTarget(null);
               }}
             >
+              <Text style={styles.modalCancelText}>{t.cancel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={speedModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSpeedModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{bookText.speedTitle}</Text>
+            {[0.75, 1, 1.25, 1.5, 1.75, 2].map(s => (
+              <TouchableOpacity
+                key={s}
+                style={styles.modalActionRow}
+                onPress={() => {
+                  updateSetting('playbackSpeed', s);
+                  setSpeedModalVisible(false);
+                }}
+              >
+                <Text
+                  style={[styles.modalActionText, settings.playbackSpeed === s && { color: resolvedAccent }]}
+                >
+                  {s}x
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setSpeedModalVisible(false)}>
               <Text style={styles.modalCancelText}>{t.cancel}</Text>
             </TouchableOpacity>
           </View>
@@ -5712,6 +6069,22 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  npLongRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+  },
+  skipBtn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
+  skipBtnText: { position: 'absolute', color: '#FFFFFF', fontSize: 9, fontWeight: '800', marginTop: 2 },
+  continueTitle: {
+    color: TEXT_DIM,
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingBottom: 4,
+  },
   vdBanner: {
     position: 'absolute',
     left: 12,
@@ -5829,7 +6202,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  npActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 36 },
+  npActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 22 },
   npVolume: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   eqWrap: {
     width: 22,

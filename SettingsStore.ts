@@ -12,6 +12,7 @@ export interface AppSettings {
   dynamicTheme: boolean;
   relatedSongs: boolean;
   wifiOnlyDownloads: boolean;
+  playbackSpeed: number;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dynamicTheme: false,
   relatedSongs: true,
   wifiOnlyDownloads: false,
+  playbackSpeed: 1,
 };
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -57,6 +59,7 @@ export async function resetAllData(): Promise<string> {
     'snowify_lyrics',
     'snowify_following',
     'snowify_video_downloads',
+    'snowify_books',
     SETTINGS_KEY,
   ];
   const failures: string[] = [];
