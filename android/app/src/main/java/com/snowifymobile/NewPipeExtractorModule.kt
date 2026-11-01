@@ -8,11 +8,16 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.NewPipe
@@ -806,6 +811,49 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             activity.runOnUiThread { activity.startActivity(intent) }
         } catch (e: Exception) {
             promise.reject("VIDEO_ERROR", e.message, e)
+        }
+    }
+
+    // Descriptions of several videos, used to spot AI-voiced audiobooks. Videos that fail are skipped.
+    @ReactMethod
+    fun getVideoDescriptions(urls: ReadableArray, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val list = ArrayList<String>()
+                for (i in 0 until urls.size()) {
+                    val u = urls.getString(i)
+                    if (u != null) list.add(u)
+                }
+                val out: WritableArray = Arguments.createArray()
+                for (chunk in list.chunked(4)) {
+                    val results = coroutineScope {
+                        chunk.map { u ->
+                            async {
+                                withTimeoutOrNull(12000L) {
+                                    try {
+                                        val info = StreamInfo.getInfo(ServiceList.YouTube, u)
+                                        val text = info.description?.content ?: ""
+                                        Triple(u, text.take(2000), info.isUploaderVerified)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    for (r in results) {
+                        if (r == null) continue
+                        val map: WritableMap = Arguments.createMap()
+                        map.putString("url", r.first)
+                        map.putString("description", r.second)
+                        map.putBoolean("verified", r.third)
+                        out.pushMap(map)
+                    }
+                }
+                promise.resolve(out)
+            } catch (e: Exception) {
+                promise.reject("DESCRIPTION_ERROR", e.message, e)
+            }
         }
     }
 }

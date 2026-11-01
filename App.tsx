@@ -71,6 +71,9 @@ import {
   RotateCcw,
   RotateCw,
   BookOpen,
+  EyeOff,
+  BadgeCheck,
+  Star,
   Check,
   Download,
 } from 'lucide-react-native';
@@ -94,6 +97,7 @@ import {
   deleteFile,
   getFreeSpace,
   playLocalVideo,
+  getVideoDescriptions,
   VideoOption,
   ChannelHeader,
   VideoSearchResult,
@@ -145,6 +149,8 @@ import {
   loadBooks,
   saveBooks,
 } from './BookStore';
+import { BookFilter, loadBookFilter, saveBookFilter, channelKey } from './BookFilterStore';
+import { detectAiVoice, narratorNamed } from './AiFilter';
 import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from './LyricsStore';
 
 type SearchResult = Track;
@@ -2405,13 +2411,19 @@ function AppContent() {
   }
 
   function renderBookResultRow(v: VideoSearchResult) {
+    const c = classifyBook(v);
     const saved = books[v.url];
     const hint =
       saved && !saved.finished && saved.position >= 30
         ? `${formatHM(v.duration - saved.position)} ${bookText.left}`
         : formatHM(v.duration);
+    const dimmed = !!c.ai || c.blocked;
     return (
-      <TouchableOpacity key={v.url} style={styles.videoRow} onPress={() => listenBookResult(v)}>
+      <TouchableOpacity
+        key={v.url}
+        style={[styles.videoRow, dimmed && { opacity: 0.6 }]}
+        onPress={() => listenBookResult(v)}
+      >
         <View style={styles.videoThumbWrap}>
           {v.thumbnailUrl ? (
             <FadeImage uri={v.thumbnailUrl} style={styles.videoThumb} enabled={settings.animationsEnabled} />
@@ -2423,11 +2435,18 @@ function AppContent() {
           <Text style={styles.trackTitle} numberOfLines={2}>
             {v.name}
           </Text>
-          {v.uploader ? (
-            <Text style={styles.playlistSubtitle} numberOfLines={1}>
-              {v.uploader}
-            </Text>
-          ) : null}
+          <View style={styles.tagRow}>
+            {v.uploader ? (
+              <Text style={[styles.playlistSubtitle, { flexShrink: 1 }]} numberOfLines={1}>
+                {v.uploader}
+              </Text>
+            ) : null}
+            {c.verified && <BadgeCheck size={13} color={TEXT_DIM} />}
+            {c.trusted && <Star size={13} color={resolvedAccent} fill={resolvedAccent} />}
+          </View>
+          {c.ai ? <Text style={styles.tagWarn}>{filterText.aiTag}: {c.ai}</Text> : null}
+          {c.blocked ? <Text style={styles.tagWarn}>{filterText.blockedTag}</Text> : null}
+          {c.human && !c.ai ? <Text style={styles.tagGood}>{filterText.narratorTag}</Text> : null}
           <Text style={styles.vdBannerHint}>{hint}</Text>
         </View>
         <TouchableOpacity
@@ -2436,9 +2455,167 @@ function AppContent() {
         >
           <VideoIcon size={18} color={TEXT_DIM} />
         </TouchableOpacity>
+        <TouchableOpacity hitSlop={10} style={{ marginLeft: 10 }} onPress={() => setBookMenuTarget(v)}>
+          <MoreVertical size={18} color={TEXT_DIM} />
+        </TouchableOpacity>
       </TouchableOpacity>
     );
   }
+
+  const filterText =
+    settings.language === 'uk'
+      ? {
+          settingLabel: 'Ховати аудіокниги з озвучкою ШІ',
+          settingDesc: 'Ховає результати, у яких згадано голос ШІ. Знаходить лише ті, що самі про це кажуть.',
+          channelsLabel: 'Канали аудіокниг',
+          channelsDesc: (b: number, t2: number) => `Прихованих: ${b}, довірених: ${t2}`,
+          open: 'Відкрити',
+          hiddenCount: (n: number) => `Приховано результатів: ${n}. Показати`,
+          hideAgain: 'Сховати приховане',
+          aiTag: 'Схоже на озвучку ШІ',
+          blockedTag: 'Канал приховано',
+          narratorTag: 'Названо диктора',
+          trust: 'Довіряти цьому каналу',
+          untrust: 'Більше не довіряти',
+          hide: 'Ховати цей канал',
+          unhide: 'Показувати цей канал',
+          hiddenTitle: 'Приховані канали',
+          trustedTitle: 'Довірені канали',
+          noneYet: 'Поки порожньо',
+          remove: 'Прибрати',
+          close: 'Закрити',
+          menuTitle: 'Канал',
+        }
+      : {
+          settingLabel: 'Hide AI-voiced audiobooks',
+          settingDesc: 'Hides results that mention an AI voice. It only catches the ones that say so.',
+          channelsLabel: 'Audiobook channels',
+          channelsDesc: (b: number, t2: number) => `Hidden: ${b}, trusted: ${t2}`,
+          open: 'Open',
+          hiddenCount: (n: number) => `${n} results hidden. Show them`,
+          hideAgain: 'Hide them again',
+          aiTag: 'Looks AI-voiced',
+          blockedTag: 'Channel hidden',
+          narratorTag: 'Narrator named',
+          trust: 'Trust this channel',
+          untrust: 'Stop trusting',
+          hide: 'Hide this channel',
+          unhide: 'Unhide this channel',
+          hiddenTitle: 'Hidden channels',
+          trustedTitle: 'Trusted channels',
+          noneYet: 'Nothing yet',
+          remove: 'Remove',
+          close: 'Close',
+          menuTitle: 'Channel',
+        };
+
+  const [bookFilter, setBookFilter] = useState<BookFilter>({ blocked: [], trusted: [] });
+  const [bookFilterLoaded, setBookFilterLoaded] = useState(false);
+  const [bookDetails, setBookDetails] = useState<{ [url: string]: { description: string; verified: boolean } }>({});
+  const [showHiddenBooks, setShowHiddenBooks] = useState(false);
+  const [bookMenuTarget, setBookMenuTarget] = useState<VideoSearchResult | null>(null);
+  const [channelListsVisible, setChannelListsVisible] = useState(false);
+  const bookDetailToken = useRef(0);
+
+  useEffect(() => {
+    loadBookFilter().then(saved => {
+      setBookFilter(prev => ({
+        blocked: [...saved.blocked, ...prev.blocked.filter(p => !saved.blocked.some(s => s.key === p.key))],
+        trusted: [...saved.trusted, ...prev.trusted.filter(p => !saved.trusted.some(s => s.key === p.key))],
+      }));
+      setBookFilterLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!bookFilterLoaded) return;
+    saveBookFilter(bookFilter);
+  }, [bookFilter, bookFilterLoaded]);
+
+  async function fetchBookDetails(list: VideoSearchResult[]) {
+    const token = ++bookDetailToken.current;
+    const urls = list.slice(0, 16).map(v => v.url);
+    if (urls.length === 0) return;
+    try {
+      const out = await getVideoDescriptions(urls);
+      if (token !== bookDetailToken.current) return;
+      setBookDetails(prev => {
+        const next = { ...prev };
+        out.forEach(d => {
+          next[d.url] = { description: d.description, verified: d.verified };
+        });
+        return next;
+      });
+      logDebug(`Audiobook details: ${out.length} of ${urls.length}`);
+    } catch (e: any) {
+      logDebug(`Audiobook details failed: ${e?.message ?? e}`);
+    }
+  }
+
+  function classifyBook(v: VideoSearchResult) {
+    const det = bookDetails[v.url];
+    const text = `${v.name}\n${v.uploader}\n${det ? det.description : ''}`;
+    const ai = settings.hideAiBooks ? detectAiVoice(text) : null;
+    const key = channelKey(v.uploaderUrl, v.uploader);
+    return {
+      key,
+      ai,
+      blocked: bookFilter.blocked.some(c => c.key === key),
+      trusted: bookFilter.trusted.some(c => c.key === key),
+      human: narratorNamed(text),
+      verified: !!(det && det.verified),
+    };
+  }
+
+  function toggleBookTrust(v: VideoSearchResult) {
+    const key = channelKey(v.uploaderUrl, v.uploader);
+    setBookFilter(prev => {
+      const on = prev.trusted.some(c => c.key === key);
+      return {
+        blocked: on ? prev.blocked : prev.blocked.filter(c => c.key !== key),
+        trusted: on
+          ? prev.trusted.filter(c => c.key !== key)
+          : [...prev.trusted, { key, name: v.uploader || key }],
+      };
+    });
+    logDebug(`Audiobook channel trust toggled: ${v.uploader}`);
+  }
+
+  function toggleBookBlock(v: VideoSearchResult) {
+    const key = channelKey(v.uploaderUrl, v.uploader);
+    setBookFilter(prev => {
+      const on = prev.blocked.some(c => c.key === key);
+      return {
+        trusted: on ? prev.trusted : prev.trusted.filter(c => c.key !== key),
+        blocked: on
+          ? prev.blocked.filter(c => c.key !== key)
+          : [...prev.blocked, { key, name: v.uploader || key }],
+      };
+    });
+    logDebug(`Audiobook channel hide toggled: ${v.uploader}`);
+  }
+
+  const bookPartition = (() => {
+    const visible: { v: VideoSearchResult; trusted: boolean }[] = [];
+    const hidden: VideoSearchResult[] = [];
+    for (const v of bookResults) {
+      const c = classifyBook(v);
+      if (c.blocked || c.ai) hidden.push(v);
+      else visible.push({ v, trusted: c.trusted });
+    }
+    visible.sort((a, b) => Number(b.trusted) - Number(a.trusted));
+    return { visible: visible.map(x => x.v), hidden };
+  })();
+  const hiddenBooks = bookPartition.hidden;
+  const bookListData = showHiddenBooks
+    ? [...bookPartition.visible, ...hiddenBooks]
+    : bookPartition.visible;
+
+  useEffect(() => {
+    if (searchMode === 'books' && bookResults.length > 0) {
+      logDebug(`Audiobook filter: ${hiddenBooks.length} hidden of ${bookResults.length}`);
+    }
+  }, [bookResults, bookDetails, bookFilter, settings.hideAiBooks, searchMode]);
 
   function recordHistory(track: Track) {
     setHistory(prev => [track, ...prev.filter(h => h.url !== track.url)].slice(0, HISTORY_MAX));
@@ -3255,6 +3432,7 @@ function AppContent() {
           const foundBooks = (await searchVideoOnly(`${query} audiobook`)).filter(v => v.duration >= 1800);
           setBookResults(foundBooks);
           logDebug(`Audiobook results: ${foundBooks.length} for "${query}"`);
+          fetchBookDetails(foundBooks);
           return;
         }
         if (searchMode === 'playlists') {
@@ -3907,6 +4085,7 @@ function AppContent() {
           });
           setVideoDownloads([]);
           setBooks({});
+          setBookFilter({ blocked: [], trusted: [] });
           setHistory([]);
           setSettings(DEFAULT_SETTINGS);
           logDebug('All data reset by user');
@@ -4079,6 +4258,15 @@ function AppContent() {
               </TouchableOpacity>
             </View>
 
+            {searchMode === 'books' && hiddenBooks.length > 0 && (
+              <TouchableOpacity style={styles.hiddenBar} onPress={() => setShowHiddenBooks(s => !s)}>
+                <EyeOff size={14} color={TEXT_DIM} />
+                <Text style={styles.hiddenBarText}>
+                  {showHiddenBooks ? filterText.hideAgain : filterText.hiddenCount(hiddenBooks.length)}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             {searching && (
               <ActivityIndicator style={styles.loadingIndicator} color={resolvedAccent} />
             )}
@@ -4086,7 +4274,7 @@ function AppContent() {
             {searchError && <Text style={styles.errorText}>{searchError}</Text>}
 
             <FlatList
-              data={(searchMode === 'songs' ? results : searchMode === 'playlists' ? playlistResults : bookResults) as any[]}
+              data={(searchMode === 'songs' ? results : searchMode === 'playlists' ? playlistResults : bookListData) as any[]}
               ListHeaderComponent={
                 !query.trim() && searchMode === 'songs' && continueBooks.length > 0 ? (
                   <View style={{ marginBottom: 8 }}>
@@ -4623,6 +4811,30 @@ function AppContent() {
                       trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />
+                  }
+                />
+                <SettingsRow
+                  label={filterText.settingLabel}
+                  description={filterText.settingDesc}
+                  control={
+                    <Switch
+                      value={settings.hideAiBooks}
+                      onValueChange={v => updateSetting('hideAiBooks', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={filterText.channelsLabel}
+                  description={filterText.channelsDesc(bookFilter.blocked.length, bookFilter.trusted.length)}
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsSecondaryButton}
+                      onPress={() => setChannelListsVisible(true)}
+                    >
+                      <Text style={styles.settingsSecondaryButtonText}>{filterText.open}</Text>
+                    </TouchableOpacity>
                   }
                 />
                 <SettingsRow
@@ -5740,6 +5952,108 @@ function AppContent() {
       </Modal>
 
       <Modal
+        visible={!!bookMenuTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBookMenuTarget(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{filterText.menuTitle}</Text>
+            <Text style={styles.queueNowPlaying} numberOfLines={2}>
+              {bookMenuTarget ? bookMenuTarget.uploader : ''}
+            </Text>
+            {bookMenuTarget && (
+              <>
+                <TouchableOpacity
+                  style={styles.modalActionRow}
+                  onPress={() => {
+                    toggleBookTrust(bookMenuTarget);
+                    setBookMenuTarget(null);
+                  }}
+                >
+                  <Star size={18} color="#FFFFFF" />
+                  <Text style={styles.modalActionText}>
+                    {classifyBook(bookMenuTarget).trusted ? filterText.untrust : filterText.trust}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalActionRow}
+                  onPress={() => {
+                    toggleBookBlock(bookMenuTarget);
+                    setBookMenuTarget(null);
+                  }}
+                >
+                  <EyeOff size={18} color={LIKE_RED} />
+                  <Text style={[styles.modalActionText, { color: LIKE_RED }]}>
+                    {classifyBook(bookMenuTarget).blocked ? filterText.unhide : filterText.hide}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setBookMenuTarget(null)}>
+              <Text style={styles.modalCancelText}>{filterText.close}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={channelListsVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setChannelListsVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <ScrollView style={{ maxHeight: 420 }}>
+              <Text style={styles.modalTitle}>{filterText.hiddenTitle}</Text>
+              {bookFilter.blocked.length === 0 && (
+                <Text style={styles.modalEmptyText}>{filterText.noneYet}</Text>
+              )}
+              {bookFilter.blocked.map(c => (
+                <View key={c.key} style={styles.modalActionRow}>
+                  <Text style={[styles.modalActionText, { flex: 1 }]} numberOfLines={1}>
+                    {c.name}
+                  </Text>
+                  <TouchableOpacity
+                    hitSlop={10}
+                    onPress={() =>
+                      setBookFilter(prev => ({ ...prev, blocked: prev.blocked.filter(x => x.key !== c.key) }))
+                    }
+                  >
+                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{filterText.remove}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <Text style={[styles.modalTitle, { marginTop: 16 }]}>{filterText.trustedTitle}</Text>
+              {bookFilter.trusted.length === 0 && (
+                <Text style={styles.modalEmptyText}>{filterText.noneYet}</Text>
+              )}
+              {bookFilter.trusted.map(c => (
+                <View key={c.key} style={styles.modalActionRow}>
+                  <Text style={[styles.modalActionText, { flex: 1 }]} numberOfLines={1}>
+                    {c.name}
+                  </Text>
+                  <TouchableOpacity
+                    hitSlop={10}
+                    onPress={() =>
+                      setBookFilter(prev => ({ ...prev, trusted: prev.trusted.filter(x => x.key !== c.key) }))
+                    }
+                  >
+                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{filterText.remove}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setChannelListsVisible(false)}>
+              <Text style={styles.modalCancelText}>{filterText.close}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={lyricsVisible}
         animationType="slide"
         statusBarTranslucent
@@ -6071,6 +6385,21 @@ const styles = StyleSheet.create({
     marginHorizontal: 28,
   },
   volumeBarWrapper: { flex: 1 },
+  hiddenBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: CARD,
+  },
+  hiddenBarText: { color: TEXT_DIM, fontSize: 12, fontWeight: '600' },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tagWarn: { color: LIKE_RED, fontSize: 11, fontWeight: '700', marginTop: 3 },
+  tagGood: { color: '#4ADE80', fontSize: 11, fontWeight: '700', marginTop: 3 },
   npLongRow: {
     flexDirection: 'row',
     alignItems: 'center',

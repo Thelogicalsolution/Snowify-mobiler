@@ -219,3 +219,14 @@ export async function playLocalVideo(
 ): Promise<VideoResult> {
   return NewPipeExtractorModule.playLocalVideo(videoPath, audioPath, startSeconds);
 }
+
+export type VideoDetails = {
+  url: string;
+  description: string;
+  verified: boolean;
+};
+
+// Descriptions (and whether the channel is verified) of several videos at once.
+export async function getVideoDescriptions(urls: string[]): Promise<VideoDetails[]> {
+  return NewPipeExtractorModule.getVideoDescriptions(urls);
+}

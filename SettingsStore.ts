@@ -13,6 +13,7 @@ export interface AppSettings {
   relatedSongs: boolean;
   wifiOnlyDownloads: boolean;
   playbackSpeed: number;
+  hideAiBooks: boolean;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   relatedSongs: true,
   wifiOnlyDownloads: false,
   playbackSpeed: 1,
+  hideAiBooks: true,
 };
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -60,6 +62,7 @@ export async function resetAllData(): Promise<string> {
     'snowify_following',
     'snowify_video_downloads',
     'snowify_books',
+    'snowify_book_filter',
     SETTINGS_KEY,
   ];
   const failures: string[] = [];
