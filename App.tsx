@@ -2444,9 +2444,9 @@ function AppContent() {
             {c.verified && <BadgeCheck size={13} color={TEXT_DIM} />}
             {c.trusted && <Star size={13} color={resolvedAccent} fill={resolvedAccent} />}
           </View>
-          {c.ai ? <Text style={styles.tagWarn}>{filterText.aiTag}: {c.ai}</Text> : null}
-          {c.blocked ? <Text style={styles.tagWarn}>{filterText.blockedTag}</Text> : null}
-          {c.human && !c.ai ? <Text style={styles.tagGood}>{filterText.narratorTag}</Text> : null}
+          {c.ai ? <Text style={styles.tagWarn}>{aiFilterText.aiTag}: {c.ai}</Text> : null}
+          {c.blocked ? <Text style={styles.tagWarn}>{aiFilterText.blockedTag}</Text> : null}
+          {c.human && !c.ai ? <Text style={styles.tagGood}>{aiFilterText.narratorTag}</Text> : null}
           <Text style={styles.vdBannerHint}>{hint}</Text>
         </View>
         <TouchableOpacity
@@ -2462,7 +2462,7 @@ function AppContent() {
     );
   }
 
-  const filterText =
+  const aiFilterText =
     settings.language === 'uk'
       ? {
           settingLabel: 'Ховати аудіокниги з озвучкою ШІ',
@@ -4262,7 +4262,7 @@ function AppContent() {
               <TouchableOpacity style={styles.hiddenBar} onPress={() => setShowHiddenBooks(s => !s)}>
                 <EyeOff size={14} color={TEXT_DIM} />
                 <Text style={styles.hiddenBarText}>
-                  {showHiddenBooks ? filterText.hideAgain : filterText.hiddenCount(hiddenBooks.length)}
+                  {showHiddenBooks ? aiFilterText.hideAgain : aiFilterText.hiddenCount(hiddenBooks.length)}
                 </Text>
               </TouchableOpacity>
             )}
@@ -4814,8 +4814,8 @@ function AppContent() {
                   }
                 />
                 <SettingsRow
-                  label={filterText.settingLabel}
-                  description={filterText.settingDesc}
+                  label={aiFilterText.settingLabel}
+                  description={aiFilterText.settingDesc}
                   control={
                     <Switch
                       value={settings.hideAiBooks}
@@ -4826,14 +4826,14 @@ function AppContent() {
                   }
                 />
                 <SettingsRow
-                  label={filterText.channelsLabel}
-                  description={filterText.channelsDesc(bookFilter.blocked.length, bookFilter.trusted.length)}
+                  label={aiFilterText.channelsLabel}
+                  description={aiFilterText.channelsDesc(bookFilter.blocked.length, bookFilter.trusted.length)}
                   control={
                     <TouchableOpacity
                       style={styles.settingsSecondaryButton}
                       onPress={() => setChannelListsVisible(true)}
                     >
-                      <Text style={styles.settingsSecondaryButtonText}>{filterText.open}</Text>
+                      <Text style={styles.settingsSecondaryButtonText}>{aiFilterText.open}</Text>
                     </TouchableOpacity>
                   }
                 />
@@ -5959,7 +5959,7 @@ function AppContent() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{filterText.menuTitle}</Text>
+            <Text style={styles.modalTitle}>{aiFilterText.menuTitle}</Text>
             <Text style={styles.queueNowPlaying} numberOfLines={2}>
               {bookMenuTarget ? bookMenuTarget.uploader : ''}
             </Text>
@@ -5974,7 +5974,7 @@ function AppContent() {
                 >
                   <Star size={18} color="#FFFFFF" />
                   <Text style={styles.modalActionText}>
-                    {classifyBook(bookMenuTarget).trusted ? filterText.untrust : filterText.trust}
+                    {classifyBook(bookMenuTarget).trusted ? aiFilterText.untrust : aiFilterText.trust}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -5986,13 +5986,13 @@ function AppContent() {
                 >
                   <EyeOff size={18} color={LIKE_RED} />
                   <Text style={[styles.modalActionText, { color: LIKE_RED }]}>
-                    {classifyBook(bookMenuTarget).blocked ? filterText.unhide : filterText.hide}
+                    {classifyBook(bookMenuTarget).blocked ? aiFilterText.unhide : aiFilterText.hide}
                   </Text>
                 </TouchableOpacity>
               </>
             )}
             <TouchableOpacity style={styles.modalCancelButton} onPress={() => setBookMenuTarget(null)}>
-              <Text style={styles.modalCancelText}>{filterText.close}</Text>
+              <Text style={styles.modalCancelText}>{aiFilterText.close}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -6007,9 +6007,9 @@ function AppContent() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <ScrollView style={{ maxHeight: 420 }}>
-              <Text style={styles.modalTitle}>{filterText.hiddenTitle}</Text>
+              <Text style={styles.modalTitle}>{aiFilterText.hiddenTitle}</Text>
               {bookFilter.blocked.length === 0 && (
-                <Text style={styles.modalEmptyText}>{filterText.noneYet}</Text>
+                <Text style={styles.modalEmptyText}>{aiFilterText.noneYet}</Text>
               )}
               {bookFilter.blocked.map(c => (
                 <View key={c.key} style={styles.modalActionRow}>
@@ -6022,13 +6022,13 @@ function AppContent() {
                       setBookFilter(prev => ({ ...prev, blocked: prev.blocked.filter(x => x.key !== c.key) }))
                     }
                   >
-                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{filterText.remove}</Text>
+                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{aiFilterText.remove}</Text>
                   </TouchableOpacity>
                 </View>
               ))}
-              <Text style={[styles.modalTitle, { marginTop: 16 }]}>{filterText.trustedTitle}</Text>
+              <Text style={[styles.modalTitle, { marginTop: 16 }]}>{aiFilterText.trustedTitle}</Text>
               {bookFilter.trusted.length === 0 && (
-                <Text style={styles.modalEmptyText}>{filterText.noneYet}</Text>
+                <Text style={styles.modalEmptyText}>{aiFilterText.noneYet}</Text>
               )}
               {bookFilter.trusted.map(c => (
                 <View key={c.key} style={styles.modalActionRow}>
@@ -6041,13 +6041,13 @@ function AppContent() {
                       setBookFilter(prev => ({ ...prev, trusted: prev.trusted.filter(x => x.key !== c.key) }))
                     }
                   >
-                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{filterText.remove}</Text>
+                    <Text style={[styles.modalActionText, { color: resolvedAccent }]}>{aiFilterText.remove}</Text>
                   </TouchableOpacity>
                 </View>
               ))}
             </ScrollView>
             <TouchableOpacity style={styles.modalCancelButton} onPress={() => setChannelListsVisible(false)}>
-              <Text style={styles.modalCancelText}>{filterText.close}</Text>
+              <Text style={styles.modalCancelText}>{aiFilterText.close}</Text>
             </TouchableOpacity>
           </View>
         </View>
