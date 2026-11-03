@@ -856,4 +856,27 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    @ReactMethod
+    fun getChapters(url: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val out: WritableArray = Arguments.createArray()
+                val info = withTimeoutOrNull(15000L) {
+                    StreamInfo.getInfo(ServiceList.YouTube, url)
+                }
+                if (info != null) {
+                    for (seg in info.streamSegments) {
+                        val map: WritableMap = Arguments.createMap()
+                        map.putString("title", seg.title ?: "")
+                        map.putInt("start", seg.startTimeSeconds)
+                        out.pushMap(map)
+                    }
+                }
+                promise.resolve(out)
+            } catch (e: Exception) {
+                promise.reject("CHAPTERS_ERROR", e.message, e)
+            }
+        }
+    }
 }

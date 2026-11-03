@@ -230,3 +230,9 @@ export type VideoDetails = {
 export async function getVideoDescriptions(urls: string[]): Promise<VideoDetails[]> {
   return NewPipeExtractorModule.getVideoDescriptions(urls);
 }
+
+export type Chapter = { title: string; start: number };
+
+export async function getChapters(url: string): Promise<Chapter[]> {
+  return NewPipeExtractorModule.getChapters(url);
+}

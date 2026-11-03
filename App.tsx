@@ -102,8 +102,7 @@ import {
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
-  PlaylistResult,
-} from './NewPipeBridge';
+  PlaylistResult, getChapters, } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -3107,6 +3106,25 @@ function AppContent() {
       // ignore
     }
   }, [isLongForm, settings.playbackSpeed, nowPlaying?.url]);
+  const [chapters, setChapters] = useState<{ title: string; start: number }[]>([]);
+  const [chaptersVisible, setChaptersVisible] = useState(false);
+  const fmtChapter = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    const mm = h > 0 && m < 10 ? '0' + m : String(m);
+    const ss = s < 10 ? '0' + s : String(s);
+    return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  };
+  useEffect(() => {
+    setChapters([]);
+    if (!isLongForm || !nowPlaying?.url) return undefined;
+    let cancelled = false;
+    getChapters(nowPlaying.url)
+      .then((c) => { if (!cancelled) setChapters(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isLongForm, nowPlaying?.url]);
 
   // Lyrics: which synced line is current, and scrolling it into view.
   const showLyrics = lyricsUrl === (nowPlaying?.url ?? null);
@@ -5825,6 +5843,42 @@ function AppContent() {
               </View>
             )}
 
+            {isLongForm && chapters.length > 0 && (
+              <TouchableOpacity
+                style={[styles.actionPill, { borderColor: resolvedAccent, alignSelf: 'center', marginBottom: 12 }]}
+                onPress={() => setChaptersVisible(true)}
+              >
+                <Text style={styles.actionPillText}>
+                  {(settings.language === 'uk' ? '\u0420\u043e\u0437\u0434\u0456\u043b\u0438' : 'Chapters') + ' (' + chapters.length + ')'}
+                </Text>
+              </TouchableOpacity>
+            )}
+            <Modal visible={chaptersVisible} transparent animationType="fade" onRequestClose={() => setChaptersVisible(false)}>
+              <TouchableOpacity
+                activeOpacity={1}
+                style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}
+                onPress={() => setChaptersVisible(false)}
+              >
+                <View style={{ backgroundColor: '#1A1A1A', borderRadius: 16, maxHeight: '70%', paddingVertical: 8 }}>
+                  <ScrollView>
+                    {(() => {
+                      let cur = 0;
+                      chapters.forEach((c, i) => { if (c.start <= progress.position) cur = i; });
+                      return chapters.map((c, i) => (
+                        <TouchableOpacity
+                          key={i}
+                          style={{ flexDirection: 'row', paddingVertical: 12, paddingHorizontal: 16 }}
+                          onPress={() => { TrackPlayer.seekTo(c.start); setChaptersVisible(false); }}
+                        >
+                          <Text style={{ color: i === cur ? resolvedAccent : '#9CA3AF', width: 64 }}>{fmtChapter(c.start)}</Text>
+                          <Text style={{ color: i === cur ? resolvedAccent : '#FFFFFF', flex: 1 }} numberOfLines={2}>{c.title}</Text>
+                        </TouchableOpacity>
+                      ));
+                    })()}
+                  </ScrollView>
+                </View>
+              </TouchableOpacity>
+            </Modal>
             <View style={styles.npActions}>
               <AnimatedHeart
                 liked={isLiked(nowPlaying.url)}
