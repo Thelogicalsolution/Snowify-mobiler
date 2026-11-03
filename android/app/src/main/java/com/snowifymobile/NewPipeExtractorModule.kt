@@ -879,4 +879,44 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    @ReactMethod
+    fun getVideoTitles(urls: ReadableArray, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val list = ArrayList<String>()
+                for (i in 0 until urls.size()) {
+                    val u = urls.getString(i)
+                    if (u != null) list.add(u)
+                }
+                val out: WritableArray = Arguments.createArray()
+                for (chunk in list.chunked(4)) {
+                    val results = coroutineScope {
+                        chunk.map { u ->
+                            async {
+                                withTimeoutOrNull(12000L) {
+                                    try {
+                                        val info = StreamInfo.getInfo(ServiceList.YouTube, u)
+                                        Pair(u, info.name ?: "")
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    for (r in results) {
+                        if (r == null) continue
+                        val map: WritableMap = Arguments.createMap()
+                        map.putString("url", r.first)
+                        map.putString("name", r.second)
+                        out.pushMap(map)
+                    }
+                }
+                promise.resolve(out)
+            } catch (e: Exception) {
+                promise.reject("TITLES_ERROR", e.message, e)
+            }
+        }
+    }
 }

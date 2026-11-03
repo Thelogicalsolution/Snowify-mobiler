@@ -102,7 +102,7 @@ import {
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
-  PlaylistResult, getChapters, } from './NewPipeBridge';
+  PlaylistResult, getChapters, getVideosFromPage, } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -3434,6 +3434,31 @@ function AppContent() {
 
     debounceRef.current = setTimeout(async () => {
       const typed = query.trim();
+      if (
+        /^https?:\/\/[^\s\/]+\.[^\s\/]+/i.test(typed) &&
+        !/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)(\/|$)/i.test(typed)
+      ) {
+        if (searchMode !== 'songs') {
+          setSearchMode('songs');
+          return;
+        }
+        setSearching(true);
+        setSearchError(null);
+        logDebug(`Web page link pasted: ${typed}`);
+        try {
+          const fromPage = await getVideosFromPage(typed);
+          setResults(fromPage);
+          logDebug(`Web page videos: ${fromPage.length} from ${typed}`);
+        } catch (e: any) {
+          const msg = e?.message ?? 'Could not read the page';
+          setSearchError(msg);
+          setResults([]);
+          logDebug(`Web page failed for ${typed}: ${msg}`);
+        } finally {
+          setSearching(false);
+        }
+        return;
+      }
       if (
         /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(typed) &&
         /[?&]list=[\w-]+/i.test(typed)

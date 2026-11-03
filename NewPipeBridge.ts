@@ -236,3 +236,43 @@ export type Chapter = { title: string; start: number };
 export async function getChapters(url: string): Promise<Chapter[]> {
   return NewPipeExtractorModule.getChapters(url);
 }
+
+export type PageVideo = { url: string; name: string };
+
+export async function getVideoTitles(urls: string[]): Promise<PageVideo[]> {
+  return NewPipeExtractorModule.getVideoTitles(urls);
+}
+
+export async function getVideosFromPage(pageUrl: string): Promise<SearchResult[]> {
+  const res = await Promise.race([
+    fetch(pageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Page took too long to load')), 15000)),
+  ]);
+  if (!res.ok) throw new Error('Page returned HTTP ' + res.status);
+  const html = (await res.text()).replace(/\\\//g, '/').replace(/&amp;/g, '&');
+  const rx = /(?:youtube(?:-nocookie)?\.com\/(?:embed\/|v\/|shorts\/|live\/)|youtu\.be\/|youtube(?:-nocookie)?\.com\/watch\?(?:[^"'\s<>]*?[?&])?v=)([\w-]{11})(?![\w-])/gi;
+  const ids: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(html)) !== null) {
+    if (!ids.includes(m[1])) ids.push(m[1]);
+  }
+  if (ids.length === 0) throw new Error('No YouTube videos found on this page');
+  const limited = ids.slice(0, 30);
+  const urls = limited.map((id) => 'https://www.youtube.com/watch?v=' + id);
+  const infos = await getVideoTitles(urls);
+  const byUrl: Record<string, string> = {};
+  infos.forEach((i) => { byUrl[i.url] = i.name; });
+  const out: SearchResult[] = [];
+  limited.forEach((id, idx) => {
+    const u = urls[idx];
+    if (byUrl[u] === undefined) return;
+    out.push({ url: u, name: byUrl[u] || id, thumbnailUrl: 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg' });
+  });
+  if (out.length === 0) throw new Error('Found videos on the page but none could be loaded');
+  return out;
+}
