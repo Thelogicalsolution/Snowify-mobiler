@@ -1104,9 +1104,12 @@ function AppContent() {
       exportedAt: new Date().toISOString(),
       liked: likedSongs,
       playlists: playlists.map(p => ({ name: p.name, tracks: p.tracks })),
+      following,
+      books: Object.values(books),
       history,
     };
     const text = JSON.stringify(backup);
+    logDebug(`Backup export also includes ${following.length} following, ${Object.keys(books).length} books`);
     logDebug(
       `Backup export: ${likedSongs.length} liked, ${playlists.length} playlists, ${history.length} history, ${text.length} characters`,
     );
@@ -1141,6 +1144,31 @@ function AppContent() {
 
     const importedLiked = cleanTracks(parsed.liked);
     const importedHistory = cleanTracks(parsed.history);
+    const importedFollowing: FollowedChannel[] = (Array.isArray(parsed.following) ? parsed.following : [])
+      .filter((c: any) => c && typeof c.url === 'string' && typeof c.name === 'string' && c.url && c.name)
+      .map((c: any) => ({
+        url: c.url,
+        name: c.name,
+        avatarUrl: typeof c.avatarUrl === 'string' ? c.avatarUrl : '',
+      }));
+    const importedBooks: BookMap[string][] = (Array.isArray(parsed.books) ? parsed.books : [])
+      .filter((b: any) => b && typeof b.url === 'string' && typeof b.name === 'string' && b.url && b.name)
+      .map((b: any) => ({
+        url: b.url,
+        name: b.name,
+        thumbnailUrl: typeof b.thumbnailUrl === 'string' ? b.thumbnailUrl : '',
+        position: Number(b.position) || 0,
+        duration: Number(b.duration) || 0,
+        updatedAt: Number(b.updatedAt) || 0,
+        isBook: !!b.isBook,
+        finished: !!b.finished,
+      }));
+    const extraConfirm =
+      importedFollowing.length + importedBooks.length > 0
+        ? settings.language === 'uk'
+          ? '\n\n\u0422\u0430\u043a\u043e\u0436: \u043f\u0456\u0434\u043f\u0438\u0441\u043a\u0438 ' + importedFollowing.length + ', \u043a\u043d\u0438\u0433\u0438 ' + importedBooks.length + '.'
+          : '\n\nAlso included: following ' + importedFollowing.length + ', books ' + importedBooks.length + '.'
+        : '';
     const importedPlaylists = (Array.isArray(parsed.playlists) ? parsed.playlists : []).map(
       (p: any) => ({
         name: typeof p?.name === 'string' && p.name ? p.name : t.myPlaylist,
@@ -1153,12 +1181,12 @@ function AppContent() {
 
     Alert.alert(
       backupText.confirmTitle,
-      backupText.confirm(importedLiked.length, importedPlaylists.length, importedHistory.length),
+      backupText.confirm(importedLiked.length, importedPlaylists.length, importedHistory.length) + extraConfirm,
       [
         { text: t.cancel, style: 'cancel' },
         {
           text: backupText.importButton,
-          onPress: () => applyBackup(importedLiked, importedPlaylists, importedHistory),
+          onPress: () => applyBackup(importedLiked, importedPlaylists, importedHistory, importedFollowing, importedBooks),
         },
       ],
     );
@@ -1168,6 +1196,8 @@ function AppContent() {
     liked: Track[],
     importedPlaylists: { name: string; tracks: Track[] }[],
     importedHistory: Track[],
+    importedFollowing: FollowedChannel[],
+    importedBooks: BookMap[string][],
   ) {
     const knownLiked = new Set(likedSongs.map(x => x.url));
     const freshLiked = liked.filter(x => !knownLiked.has(x.url));
@@ -1199,12 +1229,36 @@ function AppContent() {
       [...prev, ...freshHistory.filter(x => !prev.some(p => p.url === x.url))].slice(0, HISTORY_MAX),
     );
 
+    const knownFollowing = new Set(following.map(x => x.url));
+    const freshFollowing = importedFollowing.filter(x => !knownFollowing.has(x.url));
+    setFollowing(prev => [...prev, ...freshFollowing.filter(x => !prev.some(p => p.url === x.url))]);
+
+    let freshBooks = 0;
+    const nextBooks: BookMap = { ...books };
+    for (const b of importedBooks) {
+      const cur = nextBooks[b.url];
+      if (!cur) {
+        nextBooks[b.url] = b;
+        freshBooks++;
+      } else if (b.updatedAt > cur.updatedAt) {
+        nextBooks[b.url] = b;
+      }
+    }
+    booksRef.current = nextBooks;
+    setBooks(nextBooks);
+    logDebug(`Backup imported: ${freshFollowing.length} following, ${freshBooks} books`);
+    const extraDone =
+      freshFollowing.length + freshBooks > 0
+        ? settings.language === 'uk'
+          ? ' \u041f\u0456\u0434\u043f\u0438\u0441\u043a\u0438: ' + freshFollowing.length + ', \u043a\u043d\u0438\u0433\u0438: ' + freshBooks + '.'
+          : ' Following: ' + freshFollowing.length + ', books: ' + freshBooks + '.'
+        : '';
     logDebug(
       `Backup imported: ${freshLiked.length} liked, ${newPlaylists} new playlists, ${addedPlaylistTracks} playlist tracks, ${freshHistory.length} history`,
     );
     Alert.alert(
       backupText.doneTitle,
-      backupText.done(freshLiked.length, newPlaylists, addedPlaylistTracks, freshHistory.length),
+      backupText.done(freshLiked.length, newPlaylists, addedPlaylistTracks, freshHistory.length) + extraDone,
     );
   }
 
