@@ -24,8 +24,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions,
-} from 'react-native';
+  useWindowDimensions, Linking, } from 'react-native';
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -102,7 +101,7 @@ import {
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
-  PlaylistResult, getChapters, getVideosFromPage, } from './NewPipeBridge';
+  PlaylistResult, getChapters, getVideosFromPage, getVideoTitles, } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -3488,6 +3487,30 @@ function AppContent() {
 
     debounceRef.current = setTimeout(async () => {
       const typed = query.trim();
+      const ytVideo = typed.match(/^https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[^\s#]*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i);
+      if (ytVideo && !/[?&]list=/i.test(typed)) {
+        if (searchMode !== 'songs') {
+          setSearchMode('songs');
+          return;
+        }
+        setSearching(true);
+        setSearchError(null);
+        logDebug(`Video link pasted: ${typed}`);
+        try {
+          const vurl = 'https://www.youtube.com/watch?v=' + ytVideo[1];
+          const vinfo = await getVideoTitles([vurl]);
+          if (vinfo.length === 0) throw new Error('Could not load this video');
+          setResults([{ url: vurl, name: vinfo[0].name || ytVideo[1], thumbnailUrl: 'https://i.ytimg.com/vi/' + ytVideo[1] + '/hqdefault.jpg' }]);
+        } catch (e: any) {
+          const msg = e?.message ?? 'Could not load this video';
+          setSearchError(msg);
+          setResults([]);
+          logDebug(`Video link failed for ${typed}: ${msg}`);
+        } finally {
+          setSearching(false);
+        }
+        return;
+      }
       if (
         /^https?:\/\/[^\s\/]+\.[^\s\/]+/i.test(typed) &&
         !/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)(\/|$)/i.test(typed)
@@ -3557,6 +3580,20 @@ function AppContent() {
       }
     };
   }, [query, searchMode]);
+  const openSharedLinkRef = useRef<(u: string) => void>(() => {});
+  openSharedLinkRef.current = (u: string) => {
+    logDebug(`Link shared into the app: ${u}`);
+    changeView('search');
+    setQuery(u);
+  };
+  useEffect(() => {
+    const open = (u: string | null) => {
+      if (u && /^https?:\/\//i.test(u)) openSharedLinkRef.current(u);
+    };
+    Linking.getInitialURL().then(open).catch(() => {});
+    const sub = Linking.addEventListener('url', (e: { url: string }) => open(e.url));
+    return () => sub.remove();
+  }, []);
 
   const fadeInAfterCommitRef = useRef(false);
   useEffect(() => {
