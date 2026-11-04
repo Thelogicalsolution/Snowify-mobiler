@@ -3192,6 +3192,7 @@ function AppContent() {
     if (!(await downloadsAllowed())) return;
     const jobId = 'a' + Date.now();
     setAbJob({ id: jobId, url: item.url, received: 0, total: -1 });
+    setDownloadingUrls(prev => { const next = new Set(prev); next.add(item.url); return next; });
     logDebug(`Audiobook download started: "${item.name}"`);
     ToastAndroid.show(abText.busy + '...', ToastAndroid.SHORT);
     try {
@@ -3210,6 +3211,7 @@ function AppContent() {
       logDebug(`Audiobook download ${cancelled ? 'cancelled' : 'failed'}: ${e?.message ?? e}`);
       if (!cancelled) ToastAndroid.show(abText.failed, ToastAndroid.LONG);
     } finally {
+      setDownloadingUrls(prev => { const next = new Set(prev); next.delete(item.url); return next; });
       setAbJob(null);
     }
   }
@@ -3735,7 +3737,20 @@ function AppContent() {
   }
 
   async function handleDownloadTrack(item: Track) {
-    if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
+    if (abJob && abJob.url === item.url) {
+      cancelVideoDownload(abJob.id);
+      return;
+    }
+    const knownSeconds = Math.max(
+      books[item.url]?.duration ?? 0,
+      bookResults.find(b => b.url === item.url)?.duration ?? 0,
+      nowPlaying?.url === item.url ? progress.duration || 0 : 0,
+    );
+    const isLongItem = knownSeconds >= LONG_FORM_SECONDS;
+    if (isLongItem && !isDownloaded(item.url) && !downloadingUrls.has(item.url)) {
+      startAudiobookDownload(item);
+      return;
+    }    if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
     if (!(await downloadsAllowed())) return;
 
     logDebug(`Download started: ${item.name}`);
@@ -6011,7 +6026,7 @@ function AppContent() {
               </View>
             )}
 
-            {isLongForm && (
+            {abJob && abJob.url === nowPlaying.url && (
               <TouchableOpacity
                 style={[styles.actionPill, { borderColor: resolvedAccent, alignSelf: 'center', marginBottom: 12 }]}
                 onPress={() => {
