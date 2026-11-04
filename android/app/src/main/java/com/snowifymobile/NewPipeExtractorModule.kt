@@ -771,6 +771,58 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
         downloadCalls[id]?.cancel()
     }
 
+    // Downloads only the sound of trackUrl (for audiobooks). Writes a .part file and renames it when complete.
+    @ReactMethod
+    fun startAudioDownload(id: String, trackUrl: String, quality: String, promise: Promise) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+            val progress = longArrayOf(0L, -1L)
+            downloadCancel[id] = cancel
+            downloadProgress[id] = progress
+            var partFile: java.io.File? = null
+            try {
+                val info = StreamInfo.getInfo(ServiceList.YouTube, trackUrl)
+                val audio = pickAudioStream(info.audioStreams, quality)
+                    ?: throw java.io.IOException("No audio stream")
+                val dir = java.io.File(reactApplicationContext.filesDir, "audiobooks")
+                dir.mkdirs()
+                val key = Integer.toHexString(trackUrl.hashCode())
+                val suffix = audio.format?.suffix ?: "m4a"
+                val finalFile = java.io.File(dir, "ab_" + key + "." + suffix)
+                val part = java.io.File(dir, "ab_" + key + ".part")
+                partFile = part
+
+                if (!(finalFile.exists() && finalFile.length() > 0)) {
+                    val size = probeSize(audio.content)
+                    progress[1] = size
+                    if (size > 0) {
+                        val free = android.os.StatFs(dir.absolutePath).availableBytes
+                        if (free < size + 50L * 1024 * 1024) throw java.io.IOException("Not enough free space")
+                    }
+                    downloadToFile(id, audio.content, part, progress, cancel)
+                    if (size > 0 && part.length() < size) throw java.io.IOException("Download incomplete")
+                    if (!part.renameTo(finalFile)) throw java.io.IOException("Could not save the file")
+                }
+
+                val result: WritableMap = Arguments.createMap()
+                result.putString("path", finalFile.absolutePath)
+                result.putString("format", suffix)
+                result.putDouble("bytes", finalFile.length().toDouble())
+                promise.resolve(result)
+            } catch (e: Exception) {
+                partFile?.delete()
+                if (cancel.get()) {
+                    promise.reject("CANCELLED", "Download cancelled")
+                } else {
+                    promise.reject("DOWNLOAD_ERROR", e.message, e)
+                }
+            } finally {
+                downloadProgress.remove(id)
+                downloadCancel.remove(id)
+                downloadCalls.remove(id)
+            }
+        }
+    }
     @ReactMethod
     fun deleteFile(path: String, promise: Promise) {
         try {

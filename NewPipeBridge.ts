@@ -276,3 +276,10 @@ export async function getVideosFromPage(pageUrl: string): Promise<SearchResult[]
   if (out.length === 0) throw new Error('Found videos on the page but none could be loaded');
   return out;
 }
+
+export type AudioDownloadResult = { path: string; format: string; bytes: number };
+
+// Downloads just the sound (for audiobooks); progress and cancel reuse getVideoDownloadProgress / cancelVideoDownload.
+export async function startAudioDownload(id: string, trackUrl: string, quality: string): Promise<AudioDownloadResult> {
+  return NewPipeExtractorModule.startAudioDownload(id, trackUrl, quality);
+}

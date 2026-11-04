@@ -101,7 +101,7 @@ import {
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
-  PlaylistResult, getChapters, getVideosFromPage, getVideoTitles, } from './NewPipeBridge';
+  PlaylistResult, getChapters, getVideosFromPage, getVideoTitles, startAudioDownload, } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -3161,6 +3161,58 @@ function AppContent() {
   }, [isLongForm, settings.playbackSpeed, nowPlaying?.url]);
   const [chapters, setChapters] = useState<{ title: string; start: number }[]>([]);
   const [chaptersVisible, setChaptersVisible] = useState(false);
+  const [abJob, setAbJob] = useState<{ id: string; url: string; received: number; total: number } | null>(null);
+  const abText =
+    settings.language === 'uk'
+      ? {
+          start: '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0438\u0442\u0438',
+          busy: '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0443\u0454\u0442\u044c\u0441\u044f',
+          done: '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043e',
+          failed: '\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0438\u0442\u0438',
+        }
+      : { start: 'Download', busy: 'Downloading', done: 'Downloaded', failed: 'Download failed' };
+  useEffect(() => {
+    if (!abJob) return undefined;
+    const jobId = abJob.id;
+    const timer = setInterval(async () => {
+      try {
+        const p = await getVideoDownloadProgress(jobId);
+        if (p.active) {
+          setAbJob(prev => (prev && prev.id === jobId ? { ...prev, received: p.received, total: p.total } : prev));
+        }
+      } catch {
+        // ignore
+      }
+    }, 700);
+    return () => clearInterval(timer);
+  }, [abJob?.id]);
+
+  async function startAudiobookDownload(item: Track) {
+    if (abJob || isDownloaded(item.url)) return;
+    if (!(await downloadsAllowed())) return;
+    const jobId = 'a' + Date.now();
+    setAbJob({ id: jobId, url: item.url, received: 0, total: -1 });
+    logDebug(`Audiobook download started: "${item.name}"`);
+    ToastAndroid.show(abText.busy + '...', ToastAndroid.SHORT);
+    try {
+      const res = await startAudioDownload(jobId, item.url, settings.audioQuality);
+      const entry: DownloadedTrack = {
+        url: item.url,
+        name: item.name,
+        thumbnailUrl: item.thumbnailUrl,
+        localPath: res.path,
+      };
+      setDownloads(prev => [...prev.filter(d => d.url !== item.url), entry]);
+      logDebug(`Audiobook downloaded: "${item.name}" .${res.format}, ${formatSize(res.bytes)}`);
+      ToastAndroid.show(abText.done + ': ' + item.name, ToastAndroid.SHORT);
+    } catch (e: any) {
+      const cancelled = String(e?.code ?? '') === 'CANCELLED' || /cancel/i.test(String(e?.message ?? ''));
+      logDebug(`Audiobook download ${cancelled ? 'cancelled' : 'failed'}: ${e?.message ?? e}`);
+      if (!cancelled) ToastAndroid.show(abText.failed, ToastAndroid.LONG);
+    } finally {
+      setAbJob(null);
+    }
+  }
   const fmtChapter = (sec: number) => {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
@@ -5959,6 +6011,23 @@ function AppContent() {
               </View>
             )}
 
+            {isLongForm && (
+              <TouchableOpacity
+                style={[styles.actionPill, { borderColor: resolvedAccent, alignSelf: 'center', marginBottom: 12 }]}
+                onPress={() => {
+                  if (abJob && abJob.url === nowPlaying.url) cancelVideoDownload(abJob.id);
+                  else if (!isDownloaded(nowPlaying.url)) startAudiobookDownload(nowPlaying);
+                }}
+              >
+                <Text style={styles.actionPillText}>
+                  {isDownloaded(nowPlaying.url)
+                    ? abText.done
+                    : abJob && abJob.url === nowPlaying.url
+                    ? abText.busy + ' ' + (abJob.total > 0 ? Math.min(99, Math.floor((abJob.received / abJob.total) * 100)) + '%' : formatSize(abJob.received)) + ' \u2715'
+                    : abText.start}
+                </Text>
+              </TouchableOpacity>
+            )}
             {isLongForm && chapters.length > 0 && (
               <TouchableOpacity
                 style={[styles.actionPill, { borderColor: resolvedAccent, alignSelf: 'center', marginBottom: 12 }]}
