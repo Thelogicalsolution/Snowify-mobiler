@@ -14,6 +14,12 @@ export interface AppSettings {
   wifiOnlyDownloads: boolean;
   playbackSpeed: number;
   hideAiBooks: boolean;
+  showLiked: boolean;
+  showHistory: boolean;
+  showFollowing: boolean;
+  showVideoDownloads: boolean;
+  showAudiobooks: boolean;
+  showDownloaded: boolean;
 }
 
 const SETTINGS_KEY = 'snowify_settings';
@@ -29,6 +35,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   wifiOnlyDownloads: false,
   playbackSpeed: 1,
   hideAiBooks: true,
+  showLiked: true,
+  showHistory: true,
+  showFollowing: true,
+  showVideoDownloads: true,
+  showAudiobooks: true,
+  showDownloaded: true,
 };
 
 export async function loadSettings(): Promise<AppSettings> {

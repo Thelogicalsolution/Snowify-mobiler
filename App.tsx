@@ -4527,7 +4527,7 @@ function AppContent() {
               ]}
               ListHeaderComponent={
                 <>
-                  <TouchableOpacity
+                  {settings.showLiked && (<TouchableOpacity
                     style={styles.playlistRow}
                     onPress={() => openPlaylistView('liked')}
                   >
@@ -4540,8 +4540,8 @@ function AppContent() {
                         {t.songsCount(likedSongs.length)}
                       </Text>
                     </View>
-                  </TouchableOpacity>
-                  <TouchableOpacity
+                  </TouchableOpacity>)}
+                  {settings.showHistory && (<TouchableOpacity
                     style={styles.playlistRow}
                     onPress={() => openPlaylistView('history')}
                   >
@@ -4554,8 +4554,8 @@ function AppContent() {
                         {t.songsCount(history.length)}
                       </Text>
                     </View>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('following')}>
+                  </TouchableOpacity>)}
+                  {settings.showFollowing && (<TouchableOpacity style={styles.playlistRow} onPress={() => changeView('following')}>
                     <View style={styles.playlistIcon}>
                       <Users size={20} color={resolvedAccent} />
                     </View>
@@ -4563,8 +4563,8 @@ function AppContent() {
                       <Text style={styles.trackTitle}>{channelText.followingTitle}</Text>
                       <Text style={styles.playlistSubtitle}>{following.length}</Text>
                     </View>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('videoDownloads')}>
+                  </TouchableOpacity>)}
+                  {settings.showVideoDownloads && (<TouchableOpacity style={styles.playlistRow} onPress={() => changeView('videoDownloads')}>
                     <View style={styles.playlistIcon}>
                       <VideoIcon size={20} color={resolvedAccent} />
                     </View>
@@ -4572,8 +4572,8 @@ function AppContent() {
                       <Text style={styles.trackTitle}>{vdText.screenTitle}</Text>
                       <Text style={styles.playlistSubtitle}>{videoDownloads.length}</Text>
                     </View>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.playlistRow} onPress={() => changeView('audiobooks')}>
+                  </TouchableOpacity>)}
+                  {settings.showAudiobooks && (<TouchableOpacity style={styles.playlistRow} onPress={() => changeView('audiobooks')}>
                     <View style={styles.playlistIcon}>
                       <BookOpen size={20} color={resolvedAccent} />
                     </View>
@@ -4581,8 +4581,8 @@ function AppContent() {
                       <Text style={styles.trackTitle}>{bookText.screenTitle}</Text>
                       <Text style={styles.playlistSubtitle}>{bookList.length}</Text>
                     </View>
-                  </TouchableOpacity>
-                  <TouchableOpacity
+                  </TouchableOpacity>)}
+                  {settings.showDownloaded && (<TouchableOpacity
                     style={styles.playlistRow}
                     onPress={() => openPlaylistView('downloaded')}
                   >
@@ -4595,7 +4595,7 @@ function AppContent() {
                         {t.songsCount(downloads.length)}
                       </Text>
                     </View>
-                  </TouchableOpacity>
+                  </TouchableOpacity>)}
                 </>
               }
               renderItem={({ item }) => (
@@ -5001,6 +5001,80 @@ function AppContent() {
                 { paddingBottom: bottomPad },
               ]}
             >
+              <SettingsSection title={settings.language === 'uk' ? '\u0411\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u043a\u0430' : 'Library'} titleColor={resolvedAccent}>
+                <SettingsRow
+                  label={t.likedSongs}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showLiked}
+                      onValueChange={v => updateSetting('showLiked', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={historyText.title}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showHistory}
+                      onValueChange={v => updateSetting('showHistory', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={channelText.followingTitle}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showFollowing}
+                      onValueChange={v => updateSetting('showFollowing', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={vdText.screenTitle}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showVideoDownloads}
+                      onValueChange={v => updateSetting('showVideoDownloads', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={bookText.screenTitle}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showAudiobooks}
+                      onValueChange={v => updateSetting('showAudiobooks', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+                <SettingsRow
+                  label={t.downloaded}
+                  description={settings.language === 'uk' ? '\u041f\u043e\u043a\u0430\u0437\u0443\u0432\u0430\u0442\u0438 \u0430\u0431\u043e \u0445\u043e\u0432\u0430\u0442\u0438 \u0446\u0435\u0439 \u0440\u044f\u0434\u043e\u043a \u0443 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u0446\u0456' : 'Show or hide this row in Your Library'}
+                  control={
+                    <Switch
+                      value={settings.showDownloaded}
+                      onValueChange={v => updateSetting('showDownloaded', v)}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
+                      thumbColor="#FFFFFF"
+                    />
+                  }
+                />
+              </SettingsSection>
               <SettingsSection title={t.sectionPlayback} titleColor={resolvedAccent}>
                 <SettingsRow
                   label={t.autoplay}
