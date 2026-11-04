@@ -5110,7 +5110,7 @@ function AppContent() {
               </SettingsSection>
 
               <SettingsSection title={t.sectionAbout} titleColor={resolvedAccent}>
-                <SettingsRow label={t.version} description="v0.1.0" control={<View />} />
+                <SettingsRow label={t.version} description="v1.0.0" control={<View />} />
               </SettingsSection>
 
               <SettingsSection title={t.sectionDeveloper} titleColor={resolvedAccent}>
