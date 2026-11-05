@@ -6175,6 +6175,20 @@ function AppContent() {
               <TouchableOpacity hitSlop={10} onPress={() => watchVideo(nowPlaying)}>
                 <VideoIcon size={24} color="#FFFFFF" />
               </TouchableOpacity>
+              {/* np download button */}
+              <TouchableOpacity
+                hitSlop={10}
+                onPress={() => {
+                  if (isDownloaded(nowPlaying.url)) ToastAndroid.show(abText.done, ToastAndroid.SHORT);
+                  else handleDownloadTrack(nowPlaying);
+                }}
+              >
+                {downloadingUrls.has(nowPlaying.url) ? (
+                  <ActivityIndicator size="small" color={resolvedAccent} />
+                ) : (
+                  <Download size={24} color={isDownloaded(nowPlaying.url) ? resolvedAccent : '#FFFFFF'} />
+                )}
+              </TouchableOpacity>
               <TouchableOpacity
                 hitSlop={10}
                 style={styles.sleepButton}
