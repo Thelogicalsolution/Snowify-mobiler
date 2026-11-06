@@ -6346,6 +6346,38 @@ function AppContent() {
             </Text>
             {bookMenuTarget && (
               <>
+                {/* book menu download */}
+                <TouchableOpacity
+                  style={styles.modalActionRow}
+                  onPress={() => {
+                    const picked = { url: bookMenuTarget.url, name: bookMenuTarget.name, thumbnailUrl: bookMenuTarget.thumbnailUrl };
+                    setBookMenuTarget(null);
+                    if (isDownloaded(picked.url)) handleRemoveDownload(picked.url);
+                    else handleDownloadTrack(picked);
+                  }}
+                >
+                  {downloadingUrls.has(bookMenuTarget.url) || (abJob && abJob.url === bookMenuTarget.url) ? (
+                    <ActivityIndicator size="small" color={resolvedAccent} />
+                  ) : (
+                    <Download size={18} color={isDownloaded(bookMenuTarget.url) ? resolvedAccent : '#FFFFFF'} />
+                  )}
+                  <Text style={[styles.modalActionText, isDownloaded(bookMenuTarget.url) && { color: resolvedAccent }]}>
+                    {isDownloaded(bookMenuTarget.url)
+                      ? settings.language === 'uk' ? '\u0412\u0438\u0434\u0430\u043b\u0438\u0442\u0438 \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u0435' : 'Remove download'
+                      : settings.language === 'uk' ? '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0438\u0442\u0438 \u043e\u0444\u043b\u0430\u0439\u043d' : 'Download for offline'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalActionRow}
+                  onPress={() => {
+                    const picked = { url: bookMenuTarget.url, name: bookMenuTarget.name, thumbnailUrl: bookMenuTarget.thumbnailUrl };
+                    setBookMenuTarget(null);
+                    startVideoDownloadFlow(picked);
+                  }}
+                >
+                  <Download size={18} color="#FFFFFF" />
+                  <Text style={styles.modalActionText}>{vdText.menuRow}</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.modalActionRow}
                   onPress={() => {
