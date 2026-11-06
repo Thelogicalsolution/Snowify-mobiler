@@ -2453,6 +2453,16 @@ function AppContent() {
           </View>
           <Text style={styles.vdBannerHint}>{left}</Text>
         </View>
+        {/* book row options */}
+        {!compact && (
+          <TouchableOpacity
+            hitSlop={10}
+            style={{ marginRight: 10 }}
+            onPress={() => setAddToPlaylistTarget({ url: b.url, name: b.name, thumbnailUrl: b.thumbnailUrl })}
+          >
+            <MoreVertical size={18} color={isDownloaded(b.url) ? resolvedAccent : TEXT_DIM} />
+          </TouchableOpacity>
+        )}
         {!compact && (
           <TouchableOpacity hitSlop={10} onPress={() => upsertBook(b.url, { isBook: false })}>
             <X size={18} color={TEXT_DIM} />
@@ -6174,20 +6184,6 @@ function AppContent() {
               </TouchableOpacity>
               <TouchableOpacity hitSlop={10} onPress={() => watchVideo(nowPlaying)}>
                 <VideoIcon size={24} color="#FFFFFF" />
-              </TouchableOpacity>
-              {/* np download button */}
-              <TouchableOpacity
-                hitSlop={10}
-                onPress={() => {
-                  if (isDownloaded(nowPlaying.url)) ToastAndroid.show(abText.done, ToastAndroid.SHORT);
-                  else handleDownloadTrack(nowPlaying);
-                }}
-              >
-                {downloadingUrls.has(nowPlaying.url) ? (
-                  <ActivityIndicator size="small" color={resolvedAccent} />
-                ) : (
-                  <Download size={24} color={isDownloaded(nowPlaying.url) ? resolvedAccent : '#FFFFFF'} />
-                )}
               </TouchableOpacity>
               <TouchableOpacity
                 hitSlop={10}
