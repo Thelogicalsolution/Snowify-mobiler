@@ -24,7 +24,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions, Linking, } from 'react-native';
+  useWindowDimensions, Linking, Dimensions, } from 'react-native';
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -629,6 +629,92 @@ function AnimatedHeart({
   );
 }
 
+function DropdownSelect({
+  options,
+  selected,
+  onSelect,
+  accent,
+  buttonStyle,
+  textStyle,
+  chevronColor = TEXT_DIM,
+}: {
+  options: { value: string; label: string }[];
+  selected: string;
+  onSelect: (v: string) => void;
+  accent: string;
+  buttonStyle?: any;
+  textStyle?: any;
+  chevronColor?: string;
+}) {
+  const btnRef = useRef<View>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0, w: 0, h: 0 });
+  const current = options.find(o => o.value === selected);
+  const win = Dimensions.get('window');
+  const menuW = Math.max(170, pos.w);
+  const menuH = options.length * 46 + 8;
+  const left = Math.min(Math.max(8, pos.x + pos.w - menuW), win.width - menuW - 8);
+  const below = pos.y + pos.h + 4 + menuH <= win.height - 8;
+  const top = below ? pos.y + pos.h + 4 : Math.max(8, pos.y - menuH - 4);
+  return (
+    <>
+      <View ref={btnRef} collapsable={false}>
+        <TouchableOpacity
+          style={buttonStyle}
+          onPress={() =>
+            btnRef.current?.measureInWindow((x, y, w, h) => {
+              setPos({ x, y, w, h });
+              setOpen(true);
+            })
+          }
+        >
+          <Text style={textStyle}>{current ? current.label : ''}</Text>
+          <ChevronDown size={14} color={chevronColor} />
+        </TouchableOpacity>
+      </View>
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setOpen(false)}
+      >
+        <TouchableOpacity activeOpacity={1} style={{ flex: 1 }} onPress={() => setOpen(false)}>
+          <View
+            style={{
+              position: 'absolute',
+              left,
+              top,
+              width: menuW,
+              backgroundColor: CARD,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: BORDER,
+              paddingVertical: 4,
+              elevation: 8,
+            }}
+          >
+            {options.map(o => (
+              <TouchableOpacity
+                key={o.value}
+                style={{ height: 46, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14 }}
+                onPress={() => {
+                  setOpen(false);
+                  onSelect(o.value);
+                }}
+              >
+                <Text style={{ flex: 1, fontSize: 15, color: o.value === selected ? accent : '#FFFFFF' }}>
+                  {o.label}
+                </Text>
+                {o.value === selected && <Check size={16} color={accent} />}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </>
+  );
+}
 function SettingsRow({
   label,
   description,
@@ -4282,17 +4368,7 @@ function AppContent() {
     setSettings(prev => ({ ...prev, [key]: value }));
   }
 
-  function cycleAudioQuality() {
-    const order: AudioQuality[] = ['best', 'balanced', 'low'];
-    const idx = order.indexOf(settings.audioQuality);
-    updateSetting('audioQuality', order[(idx + 1) % order.length]);
-  }
 
-  function cycleLanguage() {
-    const order: AppLanguage[] = ['en', 'uk'];
-    const idx = order.indexOf(settings.language);
-    updateSetting('language', order[(idx + 1) % order.length]);
-  }
 
   function handleSeek(v: number) {
     logDebug(`Seek: ${formatTime(v * progress.duration)}`);
@@ -5181,19 +5257,18 @@ function AppContent() {
                   label={t.audioQuality}
                   description={t.audioQualityDesc}
                   control={
-                    <TouchableOpacity
-                      style={styles.settingsDropdown}
-                      onPress={cycleAudioQuality}
-                    >
-                      <Text style={styles.settingsDropdownText}>
-                        {settings.audioQuality === 'best'
-                          ? t.qualityBest
-                          : settings.audioQuality === 'balanced'
-                          ? t.qualityBalanced
-                          : t.qualityLow}
-                      </Text>
-                      <ChevronDown size={14} color={TEXT_DIM} />
-                    </TouchableOpacity>
+                    <DropdownSelect
+                      options={[
+                        { value: 'best', label: t.qualityBest },
+                        { value: 'balanced', label: t.qualityBalanced },
+                        { value: 'low', label: t.qualityLow },
+                      ]}
+                      selected={settings.audioQuality}
+                      onSelect={v => updateSetting('audioQuality', v as AudioQuality)}
+                      accent={resolvedAccent}
+                      buttonStyle={styles.settingsDropdown}
+                      textStyle={styles.settingsDropdownText}
+                    />
                   }
                 />
               </SettingsSection>
@@ -5215,15 +5290,14 @@ function AppContent() {
                   label={t.languageLabel}
                   description={t.languageDesc}
                   control={
-                    <TouchableOpacity
-                      style={styles.settingsDropdown}
-                      onPress={cycleLanguage}
-                    >
-                      <Text style={styles.settingsDropdownText}>
-                        {LANGUAGE_LABELS[settings.language]}
-                      </Text>
-                      <ChevronDown size={14} color={TEXT_DIM} />
-                    </TouchableOpacity>
+                    <DropdownSelect
+                      options={(['en', 'uk'] as AppLanguage[]).map(l => ({ value: l, label: LANGUAGE_LABELS[l] }))}
+                      selected={settings.language}
+                      onSelect={v => updateSetting('language', v as AppLanguage)}
+                      accent={resolvedAccent}
+                      buttonStyle={styles.settingsDropdown}
+                      textStyle={styles.settingsDropdownText}
+                    />
                   }
                 />
                 <SettingsRow
