@@ -5,6 +5,7 @@ export interface DownloadedTrack {
   name: string;
   thumbnailUrl?: string;
   localPath: string;
+  kind?: 'audiobook';
 }
 
 const DOWNLOADS_KEY = 'snowify_downloads';

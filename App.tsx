@@ -3147,6 +3147,46 @@ function AppContent() {
 
   // The list actually shown on the playlist screen: filtered, then sorted.
   let shownTracks: Track[] = viewingPlaylistId === 'remote' ? remote.tracks : viewingPlaylistTracks;
+  const [dlSection, setDlSection] = useState<'songs' | 'audiobooks'>('songs');
+  const isAudiobookDownload = (u: string) => {
+    const d = downloads.find(x => x.url === u);
+    return d?.kind === 'audiobook' || (books[u]?.duration ?? 0) >= LONG_FORM_SECONDS;
+  };
+  if (viewingPlaylistId === 'downloaded') {
+    shownTracks = shownTracks.filter(tr => isAudiobookDownload(tr.url) === (dlSection === 'audiobooks'));
+  }
+  function renderDlTabs(active: 'songs' | 'audiobooks' | 'videos') {
+    const uk = settings.language === 'uk';
+    const tabs: { key: 'songs' | 'audiobooks' | 'videos'; label: string }[] = [
+      { key: 'songs', label: uk ? '\u041f\u0456\u0441\u043d\u0456' : 'Songs' },
+      { key: 'audiobooks', label: uk ? '\u0410\u0443\u0434\u0456\u043e\u043a\u043d\u0438\u0433\u0438' : 'Audiobooks' },
+      { key: 'videos', label: uk ? '\u0412\u0456\u0434\u0435\u043e' : 'Videos' },
+    ];
+    return (
+      <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingBottom: 8 }}>
+        {tabs.map(tab => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[
+              styles.actionPill,
+              { marginRight: 8 },
+              active === tab.key && { backgroundColor: resolvedAccent, borderColor: resolvedAccent },
+            ]}
+            onPress={() => {
+              if (tab.key === 'videos') {
+                changeView('videoDownloads');
+                return;
+              }
+              setDlSection(tab.key);
+              if (view !== 'playlist' || viewingPlaylistId !== 'downloaded') openPlaylistView('downloaded');
+            }}
+          >
+            <Text style={styles.actionPillText}>{tab.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  }
   const filterNeedle = filterText.trim().toLowerCase();
   if (filterNeedle) {
     shownTracks = shownTracks.filter(tr => tr.name.toLowerCase().includes(filterNeedle));
@@ -3212,6 +3252,7 @@ function AppContent() {
         name: item.name,
         thumbnailUrl: item.thumbnailUrl,
         localPath: res.path,
+        kind: 'audiobook',
       };
       setDownloads(prev => [...prev.filter(d => d.url !== item.url), entry]);
       logDebug(`Audiobook downloaded: "${item.name}" .${res.format}, ${formatSize(res.bytes)}`);
@@ -4646,6 +4687,7 @@ function AppContent() {
                 {viewingPlaylistId === 'remote' ? remote.name || remoteText.loading : viewingPlaylistName}
               </Text>
             </View>
+            {viewingPlaylistId === 'downloaded' && renderDlTabs(dlSection)}
             {shownTracks.length > 0 && (
               <View style={styles.listActionsRow}>
                 <TouchableOpacity
@@ -4885,6 +4927,7 @@ function AppContent() {
                 {vdText.screenTitle}
               </Text>
             </View>
+            {renderDlTabs('videos')}
             <FlatList
               data={videoDownloads}
               keyExtractor={d => d.url}
