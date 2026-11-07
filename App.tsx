@@ -179,6 +179,8 @@ const TAB_BAR_FALLBACK_HEIGHT = 70;
 const ACCENT_MIN_LIGHTNESS = 0.5;
 const ACCENT_MAX_LIGHTNESS = 0.78;
 const ACCENT_MIN_SATURATION = 0.35;
+// Colours below this saturation are treated as neutral: they have no real hue (pure grey reports hue 0 = red), so no saturation is forced onto them.
+const ACCENT_NEUTRAL_SATURATION = 0.15;
 // How far the raw dominant color is mixed toward black before becoming the
 // whole-app background - matches desktop Snowify's Album Art Palette
 // plugin. Darkening (rather than rejecting light colors outright) keeps
@@ -343,7 +345,7 @@ function normalizeAccentColor(hex: string): string {
   if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex;
   const [h, s, l] = hexToHsl(hex);
   const clampedL = clamp(l, ACCENT_MIN_LIGHTNESS, ACCENT_MAX_LIGHTNESS);
-  const clampedS = Math.max(ACCENT_MIN_SATURATION, s);
+  const clampedS = s < ACCENT_NEUTRAL_SATURATION ? s : Math.max(ACCENT_MIN_SATURATION, s);
   return hslToHex(h, clampedS, clampedL);
 }
 
@@ -3181,7 +3183,22 @@ function AppContent() {
 
   // Tier 3 - accent text/icons: the 3rd color, clamped to a legible
   // lightness/saturation band regardless of its raw extracted value.
-  const dynamicAccent = palette?.[2] ? normalizeAccentColor(palette[2].color) : null;
+  const dynamicAccent = (() => {
+    if (!palette || palette.length === 0) return null;
+    let best = palette[0];
+    let bestScore = -1;
+    for (const sw of palette) {
+      if (!/^#[0-9A-Fa-f]{6}$/.test(sw.color)) continue;
+      const [, sat, light] = hexToHsl(sw.color);
+      const lightOk = 1 - Math.abs(light - 0.5);
+      const score = sat * (0.4 + 0.6 * lightOk) * (0.5 + Math.min(sw.share, 0.5));
+      if (score > bestScore) {
+        bestScore = score;
+        best = sw;
+      }
+    }
+    return normalizeAccentColor(best.color);
+  })();
 
   const resolvedBg = dynamicBg ?? BG;
   const resolvedPlayer = dynamicPlayer ?? CARD;
@@ -3402,9 +3419,6 @@ function AppContent() {
     (view === 'playlist' && viewingPlaylistId === 'remote') ||
     (view === 'channel' && channelFrom === 'search');
 
-  function cycleSort() {
-    setSortMode(m => (m === 'default' ? 'reverse' : m === 'reverse' ? 'az' : m === 'az' ? 'za' : 'default'));
-  }
 
   // Only real user playlists (not the virtual Liked/Downloaded ones) can
   // have a track removed from them.
@@ -4799,9 +4813,15 @@ function AppContent() {
                 placeholder={sortText.filter}
                 placeholderTextColor={TEXT_DIM}
               />
-              <TouchableOpacity style={styles.sortPill} onPress={cycleSort}>
-                <Text style={styles.sortPillText}>{sortLabel}</Text>
-              </TouchableOpacity>
+              <DropdownSelect
+                options={(['default', 'reverse', 'az', 'za'] as const).map(k => ({ value: k, label: sortText.modes[k] }))}
+                selected={sortMode}
+                onSelect={v => setSortMode(v as 'default' | 'reverse' | 'az' | 'za')}
+                accent={resolvedAccent}
+                buttonStyle={[styles.sortPill, { flexDirection: 'row', alignItems: 'center' }]}
+                textStyle={[styles.sortPillText, { marginRight: 4 }]}
+                chevronColor="#FFFFFF"
+              />
             </View>
             <FlatList
               data={shownTracks}
