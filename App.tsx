@@ -5327,7 +5327,7 @@ function AppContent() {
                     <Switch
                       value={settings.dynamicTheme}
                       onValueChange={v => updateSetting('dynamicTheme', v)}
-                      trackColor={{ true: ACCENT, false: BORDER }}
+                      trackColor={{ true: resolvedAccent, false: BORDER }}
                       thumbColor="#FFFFFF"
                     />
                   }
