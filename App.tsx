@@ -1058,6 +1058,7 @@ function AppContent() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [plImport, setPlImport] = useState<{ done: number; total: number } | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [loadingTrack, setLoadingTrack] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<SearchResult | null>(null);
@@ -1182,6 +1183,164 @@ function AppContent() {
       }
     }
     return out;
+  }
+
+  function parsePlaylistText(raw: string): string[] {
+    const text = raw.replace(/^\uFEFF/, '').trim();
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length === 0) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (q: string) => {
+      const clean = q.replace(/\s+/g, ' ').trim();
+      const key = clean.toLowerCase();
+      if (clean.length < 2 || seen.has(key) || out.length >= 300) return;
+      seen.add(key);
+      out.push(clean);
+    };
+    const head = lines[0].toLowerCase();
+    if (head.includes(',') && head.includes('artist') && /(track name|title|song)/.test(head)) {
+      const rows: string[][] = [];
+      let row: string[] = [];
+      let cell = '';
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (text[i + 1] === '"') {
+              cell += '"';
+              i++;
+            } else {
+              inQuotes = false;
+            }
+          } else {
+            cell += ch;
+          }
+        } else if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',') {
+          row.push(cell);
+          cell = '';
+        } else if (ch === '\n' || ch === '\r') {
+          if (ch === '\r' && text[i + 1] === '\n') i++;
+          row.push(cell);
+          cell = '';
+          rows.push(row);
+          row = [];
+        } else {
+          cell += ch;
+        }
+      }
+      row.push(cell);
+      rows.push(row);
+      const header = rows[0].map(c => c.trim().toLowerCase());
+      const ti = header.findIndex(c => /^(track name|title|song name|song)$/.test(c));
+      const ai = header.findIndex(c => c.startsWith('artist'));
+      if (ti >= 0 && ai >= 0) {
+        for (let r = 1; r < rows.length; r++) {
+          const title = (rows[r][ti] || '').trim();
+          const artist = (rows[r][ai] || '').split(/[;,]/)[0].trim();
+          if (title) add(artist + ' ' + title);
+        }
+        return out;
+      }
+    }
+    for (const line of lines) {
+      if (/^https?:\/\//i.test(line)) continue;
+      add(line.replace(/^\d+[.)]\s+/, ''));
+    }
+    return out;
+  }
+
+  async function handleImportPlaylistText() {
+    if (plImport) return;
+    const uk = settings.language === 'uk';
+    let text = '';
+    try {
+      text = await Clipboard.getString();
+    } catch (e: any) {
+      logDebug(`Playlist import: could not read the clipboard: ${e?.message ?? e}`);
+    }
+    const queries = parsePlaylistText(text);
+    if (queries.length === 0) {
+      logDebug('Playlist import: clipboard has no song list');
+      Alert.alert(
+        uk ? '\u041d\u0456\u0447\u043e\u0433\u043e \u0456\u043c\u043f\u043e\u0440\u0442\u0443\u0432\u0430\u0442\u0438' : 'Nothing to import',
+        uk ? '\u0423 \u0431\u0443\u0444\u0435\u0440\u0456 \u043e\u0431\u043c\u0456\u043d\u0443 \u043d\u0435\u043c\u0430\u0454 \u0441\u043f\u0438\u0441\u043a\u0443 \u043f\u0456\u0441\u0435\u043d\u044c.' : 'The clipboard has no song list.',
+      );
+      return;
+    }
+    Alert.alert(
+      uk ? '\u0406\u043c\u043f\u043e\u0440\u0442 \u043f\u043b\u0435\u0439\u043b\u0456\u0441\u0442\u0430' : 'Import playlist',
+      uk
+        ? `\u0417\u043d\u0430\u0439\u0434\u0435\u043d\u043e ${queries.length} \u043f\u0456\u0441\u0435\u043d\u044c. \u041f\u0456\u0434\u0456\u0431\u0440\u0430\u0442\u0438 \u0457\u0445 \u043d\u0430 YouTube?`
+        : `Found ${queries.length} songs. Match them on YouTube? This can take a few minutes, keep the app open.`,
+      [
+        { text: t.cancel, style: 'cancel' },
+        { text: backupText.importButton, onPress: () => runPlaylistImport(queries) },
+      ],
+    );
+  }
+
+  async function runPlaylistImport(queries: string[]) {
+    const uk = settings.language === 'uk';
+    const total = queries.length;
+    const matched: (Track | null)[] = Array.from({ length: total }, () => null);
+    let done = 0;
+    let next = 0;
+    setPlImport({ done: 0, total });
+    logDebug(`Playlist import: matching ${total} songs`);
+    async function worker() {
+      while (next < total) {
+        const i = next++;
+        try {
+          const found = await searchVideos(queries[i]);
+          const r = found && found[0];
+          if (r && r.url) {
+            matched[i] = { url: r.url, name: r.name, thumbnailUrl: r.thumbnailUrl || '' };
+          }
+        } catch (e: any) {
+          logDebug(`Playlist import: search failed for "${queries[i]}": ${e?.message ?? e}`);
+        }
+        done++;
+        setPlImport({ done, total });
+      }
+    }
+    await Promise.all([worker(), worker(), worker()]);
+
+    const seenUrls = new Set<string>();
+    const tracks: Track[] = [];
+    const missed: string[] = [];
+    matched.forEach((m, i) => {
+      if (!m) {
+        missed.push(queries[i]);
+        return;
+      }
+      if (seenUrls.has(m.url)) return;
+      seenUrls.add(m.url);
+      tracks.push(m);
+    });
+    setPlImport(null);
+    if (tracks.length > 0) {
+      const plName =
+        (uk ? '\u0406\u043c\u043f\u043e\u0440\u0442\u043e\u0432\u0430\u043d\u0438\u0439 \u043f\u043b\u0435\u0439\u043b\u0456\u0441\u0442 ' : 'Imported playlist ') +
+        new Date().toISOString().slice(0, 10);
+      setPlaylists(prev => [...prev, { id: makePlaylistId(), name: plName, tracks }]);
+    }
+    logDebug(`Playlist import: ${tracks.length} matched, ${missed.length} missed`);
+    let msg = uk
+      ? `\u0406\u043c\u043f\u043e\u0440\u0442\u043e\u0432\u0430\u043d\u043e ${tracks.length} \u0437 ${total}.`
+      : `Imported ${tracks.length} of ${total} songs.`;
+    if (missed.length > 0) {
+      msg +=
+        '\n\n' +
+        (uk ? '\u041d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e:' : 'Not found:') +
+        '\n' +
+        missed.slice(0, 15).join('\n') +
+        (missed.length > 15 ? '\n+' + (missed.length - 15) : '');
+    }
+    Alert.alert(uk ? '\u0406\u043c\u043f\u043e\u0440\u0442 \u043f\u043b\u0435\u0439\u043b\u0456\u0441\u0442\u0430' : 'Import playlist', msg);
   }
 
   async function handleExportBackup() {
@@ -5368,6 +5527,25 @@ function AppContent() {
                       onPress={handleImportBackup}
                     >
                       <Text style={styles.settingsSecondaryButtonText}>{backupText.importButton}</Text>
+                    </TouchableOpacity>
+                  }
+                />
+                <SettingsRow
+                  label={settings.language === 'uk' ? '\u0406\u043c\u043f\u043e\u0440\u0442 \u043f\u043b\u0435\u0439\u043b\u0456\u0441\u0442\u0430' : 'Import playlist'}
+                  description={
+                    settings.language === 'uk'
+                      ? '\u0421\u043a\u043e\u043f\u0456\u044e\u0439\u0442\u0435 \u0441\u043f\u0438\u0441\u043e\u043a \u043f\u0456\u0441\u0435\u043d\u044c, \u043f\u043e\u0442\u0456\u043c \u043d\u0430\u0442\u0438\u0441\u043d\u0456\u0442\u044c \u0406\u043c\u043f\u043e\u0440\u0442'
+                      : 'Spotify: open exportify.app, log in, press Export next to a playlist. Open the CSV in Notepad, Ctrl+A, Ctrl+C. Or copy any list of Artist - Title lines. Then tap Import.'
+                  }
+                  control={
+                    <TouchableOpacity
+                      style={styles.settingsSecondaryButton}
+                      onPress={handleImportPlaylistText}
+                      disabled={!!plImport}
+                    >
+                      <Text style={styles.settingsSecondaryButtonText}>
+                        {plImport ? `${plImport.done}/${plImport.total}` : backupText.importButton}
+                      </Text>
                     </TouchableOpacity>
                   }
                 />
