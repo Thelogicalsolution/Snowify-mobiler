@@ -1185,19 +1185,19 @@ function AppContent() {
     return out;
   }
 
-  function parsePlaylistText(raw: string): string[] {
+  function parsePlaylistText(raw: string): { q: string; title: string }[] {
     let text = raw.replace(/^\uFEFF/, '').trim();
     if (/^spotify:track:/i.test(text)) text = 'Track URI,ISRC,Track Name,Album Name,Artist Name(s)\n' + text;
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
     if (lines.length === 0) return [];
-    const out: string[] = [];
+    const out: { q: string; title: string }[] = [];
     const seen = new Set<string>();
-    const add = (q: string) => {
+    const add = (q: string, rawTitle?: string) => {
       const clean = q.replace(/\s+/g, ' ').trim();
       const key = clean.toLowerCase();
       if (clean.length < 2 || seen.has(key) || out.length >= 300) return;
       seen.add(key);
-      out.push(clean);
+      out.push({ q: clean, title: (rawTitle || clean).replace(/\s+/g, ' ').trim() });
     };
     const head = lines[0].toLowerCase();
     if (head.includes(',') && head.includes('artist') && /(track name|title|song)/.test(head)) {
@@ -1242,14 +1242,16 @@ function AppContent() {
         for (let r = 1; r < rows.length; r++) {
           const title = (rows[r][ti] || '').trim();
           const artist = (rows[r][ai] || '').split(/[;,]/)[0].trim();
-          if (title) add(artist + ' ' + title);
+          if (title) add(artist + ' ' + title, title);
         }
         return out;
       }
     }
     for (const line of lines) {
       if (/^https?:\/\//i.test(line)) continue;
-      add(line.replace(/^\d+[.)]\s+/, ''));
+      const cl = line.replace(/^\d+[.)]\s+/, '');
+      const dash = cl.indexOf(' - ');
+      add(cl, dash > 0 ? cl.slice(dash + 3) : cl);
     }
     return out;
   }
@@ -1284,7 +1286,35 @@ function AppContent() {
     );
   }
 
-  async function runPlaylistImport(queries: string[]) {
+  function titleTokens(v: string): string[] {
+    return v
+      .toLowerCase()
+      .replace(/\(.*?\)|\[.*?\]/g, ' ')
+      .replace(/[^a-z0-9\u00c0-\uffff]+/g, ' ')
+      .split(' ')
+      .filter(w => w.length > 0);
+  }
+
+  function pickBestMatch(title: string, results: any[]): any {
+    const want = titleTokens(title.replace(/ - .*$/, ''));
+    if (want.length === 0 || !Array.isArray(results)) return null;
+    let best: any = null;
+    let bestScore = 0;
+    for (const r of results.slice(0, 5)) {
+      if (!r || !r.url || typeof r.name !== 'string') continue;
+      const got = new Set(titleTokens(r.name));
+      let hit = 0;
+      for (const w of want) if (got.has(w)) hit++;
+      const score = hit / want.length - Math.max(0, got.size - want.length) * 0.05;
+      if (score > bestScore) {
+        bestScore = score;
+        best = r;
+      }
+    }
+    return bestScore >= 0.7 ? best : null;
+  }
+
+  async function runPlaylistImport(queries: { q: string; title: string }[]) {
     const uk = settings.language === 'uk';
     const total = queries.length;
     const matched: (Track | null)[] = Array.from({ length: total }, () => null);
@@ -1296,13 +1326,13 @@ function AppContent() {
       while (next < total) {
         const i = next++;
         try {
-          const found = await searchVideos(queries[i]);
-          const r = found && found[0];
+          const found = await searchVideos(queries[i].q);
+          const r = pickBestMatch(queries[i].title, found);
           if (r && r.url) {
             matched[i] = { url: r.url, name: r.name, thumbnailUrl: r.thumbnailUrl || '' };
           }
         } catch (e: any) {
-          logDebug(`Playlist import: search failed for "${queries[i]}": ${e?.message ?? e}`);
+          logDebug(`Playlist import: search failed for "${queries[i].q}": ${e?.message ?? e}`);
         }
         done++;
         setPlImport({ done, total });
@@ -1315,7 +1345,7 @@ function AppContent() {
     const missed: string[] = [];
     matched.forEach((m, i) => {
       if (!m) {
-        missed.push(queries[i]);
+        missed.push(queries[i].q);
         return;
       }
       if (seenUrls.has(m.url)) return;
