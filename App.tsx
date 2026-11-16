@@ -1186,7 +1186,8 @@ function AppContent() {
   }
 
   function parsePlaylistText(raw: string): string[] {
-    const text = raw.replace(/^\uFEFF/, '').trim();
+    let text = raw.replace(/^\uFEFF/, '').trim();
+    if (/^spotify:track:/i.test(text)) text = 'Track URI,ISRC,Track Name,Album Name,Artist Name(s)\n' + text;
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
     if (lines.length === 0) return [];
     const out: string[] = [];
