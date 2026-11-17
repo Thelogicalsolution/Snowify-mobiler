@@ -154,6 +154,7 @@ import { LyricsResult, loadCachedLyrics, saveCachedLyrics, fetchLyrics } from '.
 type SearchResult = Track;
 type RepeatSetting = 'off' | 'all' | 'one';
 type ViewName =
+  | 'home'
   | 'search'
   | 'video'
   | 'library'
@@ -1051,7 +1052,7 @@ type VdJob = {
 function AppContent() {
   const insets = useSafeAreaInsets();
 
-  const [view, setView] = useState<ViewName>('search');
+  const [view, setView] = useState<ViewName>('home');
   const [tabBarHeight, setTabBarHeight] = useState(TAB_BAR_FALLBACK_HEIGHT);
   const viewOpacity = useRef(new Animated.Value(1)).current;
 
@@ -3604,6 +3605,7 @@ function AppContent() {
     (view === 'playlist' && viewingPlaylistId !== 'remote') ||
     (view === 'channel' && (channelFrom === 'library' || channelFrom === 'playlist' || channelFrom === 'following'));
   const videoTabActive = view === 'video' || (view === 'channel' && channelFrom === 'video');
+  const homeTabActive = view === 'home';
   const searchTabActive =
     view === 'search' ||
     (view === 'playlist' && viewingPlaylistId === 'remote') ||
@@ -4742,6 +4744,75 @@ function AppContent() {
           transform: [{ translateY: viewOpacity.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
         }}
       >
+        {view === 'home' && (
+          <ScrollView
+            style={styles.homeScroll}
+            contentContainerStyle={{ paddingBottom: tabBarHeight + 140 }}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.header}>
+              <Animated.Text style={[styles.headerTitle, { color: animatedAccentColor }]}>
+                {homeGreetingText(settings.language === 'uk')}
+              </Animated.Text>
+            </View>
+            {history.length === 0 ? (
+              <Text style={styles.homeEmpty}>
+                {settings.language === 'uk'
+                  ? '\u0422\u0443\u0442 \u0431\u0443\u0434\u0443\u0442\u044c \u043f\u0456\u0441\u043d\u0456, \u044f\u043a\u0456 \u0432\u0438 \u0441\u043b\u0443\u0445\u0430\u043b\u0438.'
+                  : 'Play a song and it will show up here.'}
+              </Text>
+            ) : (
+              <>
+                <View style={styles.homeTiles}>
+                  {history.slice(0, 6).map((tr, i) => (
+                    <TouchableOpacity
+                      key={'ht' + tr.url}
+                      style={styles.homeTile}
+                      onPress={() => playAtIndex(history, i, true)}
+                    >
+                      {tr.thumbnailUrl ? (
+                        <Image source={{ uri: tr.thumbnailUrl }} style={styles.homeTileArt} />
+                      ) : (
+                        <View style={styles.homeTileArt} />
+                      )}
+                      <Text style={styles.homeTileTitle} numberOfLines={2}>
+                        {tr.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.homeSection}>
+                  {settings.language === 'uk'
+                    ? '\u041d\u0435\u0449\u043e\u0434\u0430\u0432\u043d\u043e \u043f\u0440\u043e\u0441\u043b\u0443\u0445\u0430\u043d\u043e'
+                    : 'Recently Played'}
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.homeRow}
+                >
+                  {history.slice(0, 20).map((tr, i) => (
+                    <TouchableOpacity
+                      key={'hc' + tr.url}
+                      style={styles.homeCard}
+                      onPress={() => playAtIndex(history, i, true)}
+                    >
+                      {tr.thumbnailUrl ? (
+                        <Image source={{ uri: tr.thumbnailUrl }} style={styles.homeCardArt} />
+                      ) : (
+                        <View style={styles.homeCardArt} />
+                      )}
+                      <Text style={styles.homeCardTitle} numberOfLines={2}>
+                        {tr.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
+          </ScrollView>
+        )}
+
         {view === 'search' && (
           <>
             <View style={styles.header}>
@@ -5838,6 +5909,18 @@ function AppContent() {
         onLayout={e => setTabBarHeight(e.nativeEvent.layout.height)}
       >
         <View style={[styles.tabBarRow, { paddingBottom: insets.bottom }]}>
+          <TouchableOpacity style={styles.tabButton} onPress={() => changeView('home')}>
+            <Music size={20} color={homeTabActive ? resolvedAccent : TEXT_DIM} />
+            <Animated.Text
+              style={[
+                styles.tabLabel,
+                homeTabActive && styles.tabLabelActive,
+                homeTabActive ? { color: animatedAccentColor } : null,
+              ]}
+            >
+              {settings.language === 'uk' ? '\u0413\u043e\u043b\u043e\u0432\u043d\u0430' : 'Home'}
+            </Animated.Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.tabButton} onPress={() => changeView('search')}>
             <Search size={20} color={searchTabActive ? resolvedAccent : TEXT_DIM} />
             <Animated.Text
@@ -6856,7 +6939,26 @@ function App() {
   );
 }
 
+function homeGreetingText(uk: boolean): string {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return uk ? '\u0414\u043e\u0431\u0440\u043e\u0433\u043e \u0440\u0430\u043d\u043a\u0443' : 'Good morning';
+  if (h >= 12 && h < 18) return uk ? '\u0414\u043e\u0431\u0440\u0438\u0439 \u0434\u0435\u043d\u044c' : 'Good afternoon';
+  if (h >= 18 && h < 23) return uk ? '\u0414\u043e\u0431\u0440\u0438\u0439 \u0432\u0435\u0447\u0456\u0440' : 'Good evening';
+  return uk ? '\u0414\u043e\u0431\u0440\u043e\u0457 \u043d\u043e\u0447\u0456' : 'Good night';
+}
+
 const styles = StyleSheet.create({
+  homeScroll: { flex: 1 },
+  homeSection: { color: '#FFFFFF', fontSize: 20, fontWeight: '800', marginTop: 22, marginBottom: 12, paddingHorizontal: 16 },
+  homeTiles: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 6 },
+  homeTile: { flexBasis: '48.5%', flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 10, borderWidth: 1, borderColor: BORDER, overflow: 'hidden', marginBottom: 10, minHeight: 52 },
+  homeTileArt: { width: 52, height: 52, backgroundColor: BORDER },
+  homeTileTitle: { flex: 1, color: '#FFFFFF', fontSize: 13, fontWeight: '700', paddingHorizontal: 10 },
+  homeRow: { paddingHorizontal: 16 },
+  homeCard: { width: 140, marginRight: 12, backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: BORDER, padding: 8 },
+  homeCardArt: { width: 122, height: 122, borderRadius: 8, backgroundColor: BORDER, marginBottom: 8 },
+  homeCardTitle: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  homeEmpty: { color: TEXT_DIM, textAlign: 'center', marginTop: 40, paddingHorizontal: 24 },
   safeArea: { flex: 1, backgroundColor: BG },
   header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
   headerTitle: { color: ACCENT, fontSize: 28, fontWeight: '700' },
