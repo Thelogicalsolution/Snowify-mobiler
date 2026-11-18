@@ -24,6 +24,16 @@ async function ensureDownloadsDir(): Promise<void> {
   }
 }
 
+async function removeIfExists(path: string): Promise<void> {
+  try {
+    if (await ReactNativeBlobUtil.fs.exists(path)) {
+      await ReactNativeBlobUtil.fs.unlink(path);
+    }
+  } catch {
+    // ignore - nothing to clean up
+  }
+}
+
 export async function downloadTrackAudio(
   streamUrl: string,
   trackUrl: string,
@@ -31,17 +41,42 @@ export async function downloadTrackAudio(
 ): Promise<string> {
   await ensureDownloadsDir();
   const destPath = `${downloadsDir()}/${localFileNameFor(trackUrl, format)}`;
+  const partPath = `${destPath}.part`;
 
-  const alreadyExists = await ReactNativeBlobUtil.fs.exists(destPath);
-  if (alreadyExists) {
+  // The caller only gets here for songs it has no saved record of, so a file
+  // already at the final name is a leftover from an interrupted download and
+  // may be cut off. Start clean instead of trusting it.
+  await removeIfExists(destPath);
+  await removeIfExists(partPath);
+
+  try {
+    const res = await ReactNativeBlobUtil.config({ path: partPath }).fetch('GET', streamUrl);
+    const info: any = res.info();
+    if (info.status < 200 || info.status >= 300) {
+      throw new Error('Download failed (HTTP ' + info.status + ')');
+    }
+    const stat: any = await ReactNativeBlobUtil.fs.stat(partPath);
+    const size = Number(stat.size);
+    if (!(size > 0)) {
+      throw new Error('Downloaded file is empty');
+    }
+    const headers: Record<string, string> = info.headers || {};
+    let expected = 0;
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-length') {
+        expected = Number(headers[key]) || 0;
+      }
+    }
+    if (expected > 0 && size < expected) {
+      throw new Error('Download incomplete');
+    }
+    // Only a complete file ever gets the real name.
+    await ReactNativeBlobUtil.fs.mv(partPath, destPath);
     return destPath;
+  } catch (e) {
+    await removeIfExists(partPath);
+    throw e;
   }
-
-  const res = await ReactNativeBlobUtil.config({
-    path: destPath,
-  }).fetch('GET', streamUrl);
-
-  return res.path();
 }
 
 export async function deleteDownloadedFile(localPath: string): Promise<void> {
