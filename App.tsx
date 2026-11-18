@@ -24,7 +24,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions, Linking, Dimensions, } from 'react-native';
+  useWindowDimensions, Linking, Dimensions, PermissionsAndroid, } from 'react-native';
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -101,7 +101,7 @@ import {
   ChannelHeader,
   VideoSearchResult,
   PaletteSwatch,
-  PlaylistResult, getChapters, getVideosFromPage, getVideoTitles, startAudioDownload, } from './NewPipeBridge';
+  PlaylistResult, getChapters, getVideosFromPage, getVideoTitles, startAudioDownload, enqueueSongDownloads, getSongDownloads, ackSongDownloads, } from './NewPipeBridge';
 import {
   Track,
   Playlist,
@@ -1702,6 +1702,117 @@ function AppContent() {
     setSelected([]);
   }
 
+  const nativeDlRef = useRef<Set<string>>(new Set());
+  const syncingDlRef = useRef(false);
+  const bgDoneRef = useRef(0);
+  const bgFailedRef = useRef<string[]>([]);
+  const [bgDlCount, setBgDlCount] = useState(0);
+
+  async function syncSongDownloads() {
+    if (syncingDlRef.current) return;
+    syncingDlRef.current = true;
+    try {
+      const list = await getSongDownloads();
+      const done = list.filter(x => x.state === 'done');
+      const failed = list.filter(x => x.state === 'failed');
+      const remaining = list.filter(x => x.state === 'pending' || x.state === 'active');
+      if (done.length > 0) {
+        setDownloads(prev => {
+          const next = prev.filter(d => !done.some(x => x.url === d.url));
+          for (const x of done) {
+            next.push({ url: x.url, name: x.name, thumbnailUrl: x.thumbnailUrl, localPath: x.path });
+          }
+          return next;
+        });
+      }
+      if (done.length + failed.length > 0) {
+        await ackSongDownloads(done.concat(failed).map(x => x.url));
+        bgDoneRef.current += done.length;
+        failed.forEach(x => bgFailedRef.current.push(x.name || x.url));
+        logDebug(`Background queue: ${done.length} finished, ${failed.length} failed`);
+      }
+      const remainingUrls = new Set(remaining.map(x => x.url));
+      setDownloadingUrls(prev => {
+        const next = new Set(prev);
+        nativeDlRef.current.forEach(u => {
+          if (!remainingUrls.has(u)) next.delete(u);
+        });
+        remainingUrls.forEach(u => next.add(u));
+        return next;
+      });
+      nativeDlRef.current = remainingUrls;
+      setBgDlCount(remaining.length);
+      if (remaining.length === 0 && (bgDoneRef.current > 0 || bgFailedRef.current.length > 0)) {
+        const d = bgDoneRef.current;
+        const fl = bgFailedRef.current;
+        bgDoneRef.current = 0;
+        bgFailedRef.current = [];
+        if (fl.length === 0) {
+          ToastAndroid.show(selectText.downloadsDone, ToastAndroid.SHORT);
+        } else {
+          const uk = settings.language === 'uk';
+          Alert.alert(
+            uk ? '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f' : 'Downloads',
+            (uk
+              ? '\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043e ' + d + ', \u043f\u043e\u043c\u0438\u043b\u043e\u043a: ' + fl.length + '.'
+              : 'Downloaded ' + d + ', failed ' + fl.length + '.') +
+              '\n\n' +
+              (uk ? '\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f:' : 'Could not download:') +
+              '\n' +
+              fl.slice(0, 10).join('\n') +
+              (fl.length > 10 ? '\n+' + (fl.length - 10) : ''),
+          );
+        }
+      }
+    } catch (e: any) {
+      logDebug(`Background queue check failed: ${e?.message ?? e}`);
+    } finally {
+      syncingDlRef.current = false;
+    }
+  }
+
+  // Hands songs to the background service. Returns false if that did not work,
+  // so the caller can fall back to downloading inside the app.
+  async function queueSongsInBackground(tracks: Track[]): Promise<boolean> {
+    try {
+      try {
+        const perm = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
+        if (perm && !(await PermissionsAndroid.check(perm))) {
+          await PermissionsAndroid.request(perm);
+        }
+      } catch {
+        // the notification is optional; the downloads still run
+      }
+      const items = tracks.map(tr => ({ url: tr.url, name: tr.name, thumbnailUrl: tr.thumbnailUrl || '' }));
+      await enqueueSongDownloads(items, settings.audioQuality, settings.language === 'uk' ? 'uk' : 'en');
+      logDebug(`Background queue: ${items.length} songs added`);
+      items.forEach(i => nativeDlRef.current.add(i.url));
+      setDownloadingUrls(prev => {
+        const next = new Set(prev);
+        items.forEach(i => next.add(i.url));
+        return next;
+      });
+      setBgDlCount(c => c + items.length);
+      return true;
+    } catch (e: any) {
+      logDebug(`Background queue failed: ${e?.message ?? e}`);
+      return false;
+    }
+  }
+
+  useEffect(() => {
+    if (!downloadsLoaded) return;
+    syncSongDownloads();
+  }, [downloadsLoaded]);
+
+  useEffect(() => {
+    if (bgDlCount === 0) return;
+    const timer = setInterval(() => {
+      syncSongDownloads();
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [bgDlCount]);
+
   async function bulkDownload() {
     const tracks = selected.filter(s => !downloads.some(d => d.url === s.url));
     if (tracks.length > 0 && !(await downloadsAllowed())) return;
@@ -1712,11 +1823,25 @@ function AppContent() {
     }
     logDebug(`Selection: downloading ${tracks.length} songs`);
     ToastAndroid.show(selectText.downloading(tracks.length), ToastAndroid.LONG);
+    const longTracks: Track[] = [];
+    const bgTracks: Track[] = [];
     for (const tr of tracks) {
+      const secs = Math.max(
+        books[tr.url]?.duration ?? 0,
+        bookResults.find(b => b.url === tr.url)?.duration ?? 0,
+        nowPlaying?.url === tr.url ? progress.duration || 0 : 0,
+      );
+      if (secs >= LONG_FORM_SECONDS) longTracks.push(tr);
+      else bgTracks.push(tr);
+    }
+    if (bgTracks.length > 0 && !(await queueSongsInBackground(bgTracks))) {
+      for (const tr of bgTracks) {
+        await handleDownloadTrack(tr);
+      }
+    }
+    for (const tr of longTracks) {
       await handleDownloadTrack(tr);
     }
-    logDebug('Selection: downloads finished');
-    ToastAndroid.show(selectText.downloadsDone, ToastAndroid.SHORT);
   }
 
   function bulkAddToQueue() {
@@ -4095,6 +4220,8 @@ function AppContent() {
       return;
     }    if (isDownloaded(item.url) || downloadingUrls.has(item.url)) return;
     if (!(await downloadsAllowed())) return;
+
+    if (await queueSongsInBackground([item])) return;
 
     logDebug(`Download started: ${item.name}`);
     setDownloadingUrls(prev => {

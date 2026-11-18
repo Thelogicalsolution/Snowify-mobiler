@@ -824,6 +824,44 @@ class NewPipeExtractorModule(reactContext: ReactApplicationContext) :
         }
     }
     @ReactMethod
+    fun enqueueSongDownloads(itemsJson: String, quality: String, lang: String, promise: Promise) {
+        try {
+            val items = org.json.JSONArray(itemsJson)
+            val added = SongDownloads.enqueue(reactApplicationContext, items, quality, lang)
+            SongDownloadService.start(reactApplicationContext)
+            promise.resolve(added)
+        } catch (e: Exception) {
+            promise.reject("QUEUE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getSongDownloads(promise: Promise) {
+        try {
+            val ctx = reactApplicationContext
+            if (SongDownloads.openCount(ctx) > 0 && !SongDownloadService.running) {
+                try {
+                    SongDownloadService.start(ctx)
+                } catch (e: Exception) {
+                    // not allowed right now (for example the 6 hour limit); try again later
+                }
+            }
+            promise.resolve(SongDownloads.snapshot(ctx))
+        } catch (e: Exception) {
+            promise.reject("QUEUE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun ackSongDownloads(urlsJson: String, promise: Promise) {
+        try {
+            SongDownloads.ack(reactApplicationContext, org.json.JSONArray(urlsJson))
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("QUEUE_ERROR", e.message, e)
+        }
+    }
+    @ReactMethod
     fun deleteFile(path: String, promise: Promise) {
         try {
             promise.resolve(java.io.File(path).delete())

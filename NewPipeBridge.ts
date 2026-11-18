@@ -283,3 +283,31 @@ export type AudioDownloadResult = { path: string; format: string; bytes: number 
 export async function startAudioDownload(id: string, trackUrl: string, quality: string): Promise<AudioDownloadResult> {
   return NewPipeExtractorModule.startAudioDownload(id, trackUrl, quality);
 }
+
+export type SongDownloadEntry = {
+  url: string;
+  name: string;
+  thumbnailUrl: string;
+  state: 'pending' | 'active' | 'done' | 'failed';
+  path: string;
+  bytes: number;
+  error: string;
+};
+
+// Songs are downloaded by a background service that keeps going when the app is closed.
+export async function enqueueSongDownloads(
+  items: { url: string; name: string; thumbnailUrl: string }[],
+  quality: string,
+  lang: string,
+): Promise<number> {
+  return NewPipeExtractorModule.enqueueSongDownloads(JSON.stringify(items), quality, lang);
+}
+
+export async function getSongDownloads(): Promise<SongDownloadEntry[]> {
+  const raw = await NewPipeExtractorModule.getSongDownloads();
+  return JSON.parse(raw);
+}
+
+export async function ackSongDownloads(urls: string[]): Promise<void> {
+  await NewPipeExtractorModule.ackSongDownloads(JSON.stringify(urls));
+}
